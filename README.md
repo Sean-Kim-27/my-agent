@@ -31,23 +31,27 @@ local Codex runtime + ~/.codex/auth.json
 - `SECURITY.md`: 개인 서버 기준 보안 원칙
 - `ROADMAP.md`: 단계별 개발 우선순위
 
-## Previous CGI Test Results
+## Previous Test Results
 
-`/home/ubuntu/CGI/CGI_Cosmic_Graph_Intelligence` 디렉터리에 남아 있는 `test_result*.json` 비교 테스트 결과입니다. 각 파일은 같은 질문에 대해 일반 응답(`direct_response`)과 CGI 컨텍스트 주입 응답(`cgi_response`)을 비교하고, Judge 분석(`analysis`)으로 승자를 기록합니다.
+최근 개발 과정에서 실제로 실행해 확인한 테스트/검증 결과입니다. 상세한 작업 로그는 `codex/YYYY-MM-DD.md` 파일에 날짜별로 남겨져 있습니다.
 
-| Source file | Question | Mode | Winner | Direct latency | CGI latency | CGI graph metadata |
-| --- | --- | --- | --- | --- | --- | --- |
-| `test_result.json` | 백엔드 포트폴리오 프로젝트 추천 | `creative` | `direct` | `23131.4ms` | `49663.7ms` | nodes `20`, active `5`, orbiting `15`, binary `0`, wormhole `0` |
-| `test_result_new.json` | 1인 개발 모바일 앱 수익화 아이디어 추천 | `creative` | `cgi` | `26576.6ms` | `59237.4ms` | nodes `20`, active `6`, orbiting `14`, binary `2`, wormhole `0` |
-| `test_result_deep.json` | AI 맞춤 뉴스/콘텐츠 큐레이션 앱 아키텍처 설계 | `accurate` | `cgi` | `68894.6ms` | `157514.3ms` | nodes `20`, active `10`, orbiting `10`, binary `4`, wormhole `0` |
+| Date | Scope | Command / Check | Result |
+| --- | --- | --- | --- |
+| 2026-06-12 | 초기 로드맵 구현 전체 테스트 | `. .venv/bin/activate && pytest tests -q` | `25 passed in 0.92s` |
+| 2026-06-12 | 초기 로드맵 구현 컴파일 | `PYTHONPYCACHEPREFIX=/tmp/my-agent-pycache-final python -m compileall src` | 성공 |
+| 2026-06-12 | smoke 검증 | SQLite initialize/upsert, persona prompt, `CodexRuntime.status()` import/instantiate | `smoke-ok` |
+| 2026-06-13 | CGI harness 연동 전체 테스트 | `. .venv/bin/activate && pytest tests -q` | `29 passed in 0.96s` |
+| 2026-06-13 | CGI harness 연동 컴파일 | `. .venv/bin/activate && PYTHONPYCACHEPREFIX=/tmp/my-agent-pycache-cgi-2 python -m compileall src` | 성공 |
+| 2026-06-13 | CGI harness 로컬 HTTP smoke | CGI 리포트 prompt 주입 경로 확인 | `cgi-harness-smoke-ok` |
+| 2026-06-14 | `/api/chat` 결과 전용 엔드포인트 | `. .venv/bin/activate && python -m pytest -q` | `32 passed, 1 warning` |
+| 2026-06-14 | `/api/chat` 결과 전용 엔드포인트 컴파일 | `python3 -m compileall src` | 성공 |
+| 2026-06-14 | my-agent API health/smoke | `GET /health`, `POST /api/chat` | `{"status":"ok"}`, `네, 연결은 정상입니다.` |
+| 2026-06-14 | CGI Codex auth provider 전환 후 전체 테스트 | `. .venv/bin/activate && python -m pytest -q` | `33 passed, 1 warning` |
+| 2026-06-14 | CGI Codex auth provider 전환 후 컴파일 | `python3 -m compileall src` | 성공 |
+| 2026-06-14 | my-agent → CGI harness → Codex 실제 호출 | `POST http://127.0.0.1:8010/api/chat` | `네, CGI harness 컨텍스트를 받은 뒤 Codex로 답하고 있습니다.` |
+| 2026-06-15 | README 테스트 결과 섹션 추가 후 회귀 테스트 | `. .venv/bin/activate && python -m pytest -q` | `34 passed, 1 warning in 1.18s` |
 
-### CGI test summaries
-
-- `test_result.json`: Direct 응답이 승리했습니다. Judge는 백엔드 포트폴리오 추천 목적에는 더 넓은 범위의 다양한 옵션을 직관적으로 제시한 direct 응답이 더 실용적이라고 평가했습니다.
-- `test_result_new.json`: CGI 응답이 승리했습니다. Judge는 CGI가 노드/쌍성계 프레임워크와 현대적 트렌드를 결합해 단순 아이디어 나열보다 전략적 깊이와 설명력이 높다고 평가했습니다.
-- `test_result_deep.json`: CGI 응답이 승리했습니다. Judge는 CGI가 기술적 타당성을 유지하면서도 인지 부하 감소, 세렌디피티 등 제품 관점의 창의적 AI 전략을 포함해 서비스 설계 수준의 답변을 제공했다고 평가했습니다.
-
-참고: 위 수치는 CGI 디렉터리의 JSON 파일을 직접 파싱해 반영했습니다. 파일 내부 문자열에 raw newline이 포함되어 있어 Python `json.loads(..., strict=False)`로 읽어 검증했습니다.
+참고: 현재 개발 checkout은 `.git` 저장소가 아니라 `git status`/`git diff` 검증은 사용할 수 없습니다.
 
 ## Server Setup
 
