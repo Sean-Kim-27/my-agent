@@ -1,0 +1,32 @@
+[Unit]
+Description=Personal Codex Telegram Agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/my-agent
+EnvironmentFile=/home/ubuntu/apps/my-agent/.env
+ExecStart=/home/ubuntu/apps/my-agent/.venv/bin/python -m personal_codex_agent
+Restart=always
+RestartSec=5
+
+# Practical hardening for a single-user polling bot.
+# Keep home readable so Codex can reuse ~/.codex auth, but restrict writes to the app,
+# workspace, and Codex credential/cache directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/apps/my-agent /home/ubuntu/agent-workspace /home/ubuntu/.codex
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+

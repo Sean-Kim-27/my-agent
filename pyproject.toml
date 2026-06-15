@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-codex-agent"
+version = "0.1.0"
+description = "Private Telegram interface for a Codex-powered personal agent"
+requires-python = ">=3.10"
+dependencies = [
+  "openai-codex>=0.1.0b0",
+  "python-dotenv>=1.0.1",
+  "python-telegram-bot>=21.6",
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+  "pytest-asyncio>=1.3.0",
+]
+
+[project.scripts]
+personal-codex-agent = "personal_codex_agent.__main__:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
