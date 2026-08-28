@@ -91,6 +91,7 @@ async def test_openai_compatible_error_wrapping() -> None:
     )
 
     provider = OpenAICompatibleProvider(client=mock_client)
+    provider.max_retries = 0
 
     with pytest.raises(RateLimitError) as exc_info:
         await provider.generate([Message.user("Hello")])

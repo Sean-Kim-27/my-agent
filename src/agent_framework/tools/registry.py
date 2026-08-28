@@ -20,9 +20,15 @@ class ToolRegistry:
         name: str | None = None,
         description: str | None = None,
         definition: ToolDefinition | None = None,
+        requires_confirmation: bool = False,
     ) -> ToolDefinition:
         """Register a Python callable as a tool."""
-        tool_def = definition or generate_tool_definition(func, name=name, description=description)
+        tool_def = definition or generate_tool_definition(
+            func,
+            name=name,
+            description=description,
+            requires_confirmation=requires_confirmation,
+        )
         tool_name = tool_def.name
 
         self._tools[tool_name] = func
@@ -33,11 +39,17 @@ class ToolRegistry:
         self,
         name: str | None = None,
         description: str | None = None,
+        requires_confirmation: bool = False,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Decorator for registering functions as tools."""
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self.register(func, name=name, description=description)
+            self.register(
+                func,
+                name=name,
+                description=description,
+                requires_confirmation=requires_confirmation,
+            )
             return func
 
         return decorator

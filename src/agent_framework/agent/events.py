@@ -25,6 +25,20 @@ class AgentCallbackHandler:
     async def on_thought(self, step: int, thought: str) -> None:
         """Invoked when model internal reasoning / thought is parsed."""
 
+    async def on_tool_confirmation(
+        self,
+        step: int,
+        tool_name: str,
+        arguments: dict[str, Any] | str,
+    ) -> bool:
+        """Approval hook invoked before executing a tool with ``requires_confirmation=True``.
+
+        Return ``True`` to allow the tool call, ``False`` to reject it. The default
+        implementation approves every request — adapters (CLI, Discord, Telegram)
+        should override this to prompt the human operator.
+        """
+        return True
+
     async def on_tool_start(self, step: int, tool_name: str, arguments: dict[str, Any] | str) -> None:
         """Invoked before a tool function is executed."""
 

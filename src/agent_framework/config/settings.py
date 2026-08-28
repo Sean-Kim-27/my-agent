@@ -2,8 +2,32 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AgentConfig(BaseModel):
+    """Runtime safety knobs for the Agent orchestrator, tool executor, and LLM retries.
+
+    Centralizes execution-safety configuration that previously lived as kwargs
+    scattered across Agent, ToolExecutor, and each LLM provider.
+    """
+
+    max_steps: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum ReAct loop iterations before aborting a single agent run.",
+    )
+    tool_timeout: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-tool execution timeout in seconds.",
+    )
+    max_retries: int = Field(
+        default=3,
+        ge=0,
+        description="Retry attempts (beyond the initial call) for transient LLM API failures.",
+    )
 
 
 class Settings(BaseSettings):
@@ -34,6 +58,37 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(
         default=60.0,
         description="HTTP request timeout in seconds for LLM providers",
+    )
+
+    # Agent execution safety configuration
+    agent_max_steps: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum ReAct loop iterations before aborting a single agent run.",
+    )
+    agent_tool_timeout: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-tool execution timeout in seconds.",
+    )
+    agent_max_retries: int = Field(
+        default=3,
+        ge=0,
+        description="Retry attempts (beyond the initial call) for transient LLM API failures.",
+    )
+
+    # Persistent memory backend selection
+    memory_backend: Literal["memory", "sqlite"] = Field(
+        default="memory",
+        description="Conversation memory backend: 'memory' (in-process) or 'sqlite' (persistent).",
+    )
+    sqlite_memory_path: str = Field(
+        default="./agent_memory.db",
+        description="SQLite database path used when memory_backend='sqlite'.",
+    )
+    memory_max_messages: int | None = Field(
+        default=None,
+        description="Optional cap on stored messages per session (applies to both backends).",
     )
 
     # OpenAI Settings
@@ -108,6 +163,14 @@ class Settings(BaseSettings):
     # Logging Settings
     json_logging: bool = Field(default=False, description="Enable structured JSON log format")
     log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR)")
+
+    def agent_config(self) -> AgentConfig:
+        """Materialize a nested AgentConfig from the flat settings values."""
+        return AgentConfig(
+            max_steps=self.agent_max_steps,
+            tool_timeout=self.agent_tool_timeout,
+            max_retries=self.agent_max_retries,
+        )
 
 
 # Global settings singleton helper

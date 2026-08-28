@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 from agent_framework.logging.logger import get_logger
 from agent_framework.models.tool import ToolCall, ToolCallResult
 from agent_framework.tools.registry import ToolRegistry
+
+ConfirmationCallback = Callable[[ToolCall], Awaitable[bool]]
 
 logger = get_logger("agent_framework.tools.executor")
 
@@ -45,8 +48,14 @@ class ToolExecutor:
         self,
         tool_call: ToolCall,
         timeout: float | None = None,
+        confirm: ConfirmationCallback | None = None,
     ) -> ToolCallResult:
-        """Execute a single ToolCall."""
+        """Execute a single ToolCall.
+
+        If the tool's ``ToolDefinition.requires_confirmation`` flag is True and a
+        ``confirm`` callback is supplied, the callback must return True or the
+        call is rejected with an error result.
+        """
         start_time = time.perf_counter()
         tool_name = tool_call.name
         tool_id = tool_call.id
@@ -61,6 +70,35 @@ class ToolExecutor:
                 content=f"Error: Tool '{tool_name}' is not registered.",
                 is_error=True,
             )
+
+        definition = self.registry.get_definition(tool_name)
+        if definition is not None and definition.requires_confirmation:
+            if confirm is None:
+                logger.warning(
+                    f"Tool '{tool_name}' requires confirmation but no confirmation "
+                    "callback was provided; rejecting call."
+                )
+                return ToolCallResult(
+                    tool_call_id=tool_id,
+                    name=tool_name,
+                    content=(
+                        f"Error: Tool '{tool_name}' requires human confirmation, "
+                        "but no confirmation handler is configured."
+                    ),
+                    is_error=True,
+                )
+            approved = await confirm(tool_call)
+            if not approved:
+                logger.info(f"Tool '{tool_name}' call rejected by confirmation handler")
+                return ToolCallResult(
+                    tool_call_id=tool_id,
+                    name=tool_name,
+                    content=(
+                        f"Error: Human operator rejected the '{tool_name}' call. "
+                        "Adjust your plan or ask the user for guidance."
+                    ),
+                    is_error=True,
+                )
 
         # Parse arguments
         raw_args = tool_call.arguments
@@ -127,7 +165,8 @@ class ToolExecutor:
         self,
         tool_calls: list[ToolCall],
         timeout: float | None = None,
+        confirm: ConfirmationCallback | None = None,
     ) -> list[ToolCallResult]:
         """Execute multiple tool calls concurrently."""
-        tasks = [self.execute(tc, timeout=timeout) for tc in tool_calls]
+        tasks = [self.execute(tc, timeout=timeout, confirm=confirm) for tc in tool_calls]
         return await asyncio.gather(*tasks)

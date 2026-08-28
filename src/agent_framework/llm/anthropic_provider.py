@@ -158,6 +158,25 @@ class AnthropicProvider(LLMProvider):
             )
         return formatted_tools
 
+    def _parse_tool_calls(self, raw: Any) -> list[ToolCall]:
+        """Normalize an Anthropic Messages response into ``ToolCall`` list."""
+        tool_calls: list[ToolCall] = []
+        content = getattr(raw, "content", None) or []
+        for block in content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            arguments = getattr(block, "input", {})
+            if not isinstance(arguments, dict):
+                arguments = {}
+            tool_calls.append(
+                ToolCall(
+                    id=str(getattr(block, "id", "")),
+                    name=str(getattr(block, "name", "")),
+                    arguments=arguments,
+                )
+            )
+        return tool_calls
+
     async def _generate_internal(
         self,
         messages: list[Message],
@@ -238,28 +257,16 @@ class AnthropicProvider(LLMProvider):
 
         # Parse text and tool_use blocks
         text_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-
         for block in raw_response.content:
             block_type = getattr(block, "type", None)
             if block_type == "text":
                 text_val = getattr(block, "text", "")
                 if isinstance(text_val, str):
                     text_parts.append(text_val)
-            elif block_type == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        id=str(getattr(block, "id", "")),
-                        name=str(getattr(block, "name", "")),
-                        arguments=(
-                            getattr(block, "input", {})
-                            if isinstance(getattr(block, "input", None), dict)
-                            else {}
-                        ),
-                    )
-                )
-            elif isinstance(getattr(block, "text", None), str):
+            elif block_type != "tool_use" and isinstance(getattr(block, "text", None), str):
                 text_parts.append(block.text)
+
+        tool_calls = self._parse_tool_calls(raw_response)
 
         combined_text = "".join(text_parts) if text_parts else None
 

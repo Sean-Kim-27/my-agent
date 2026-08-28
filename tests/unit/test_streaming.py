@@ -9,7 +9,7 @@ from agent_framework.llm.openai_compatible import OpenAICompatibleProvider
 from agent_framework.models.events import StreamChunk
 from agent_framework.models.message import Message
 from agent_framework.models.response import LLMResponse
-from agent_framework.models.tool import ToolDefinition
+from agent_framework.models.tool import ToolCall, ToolDefinition
 
 
 class CustomTestProvider(LLMProvider):
@@ -22,6 +22,9 @@ class CustomTestProvider(LLMProvider):
         **kwargs: Any,
     ) -> LLMResponse:
         return LLMResponse(content="Hello streamed world!")
+
+    def _parse_tool_calls(self, raw: Any) -> list[ToolCall]:
+        return []
 
     async def health_check(self) -> bool:
         return True

@@ -140,6 +140,33 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         return formatted_tools
 
+    def _parse_tool_calls(self, raw: Any) -> list[ToolCall]:
+        """Normalize an OpenAI Chat Completions message into ``ToolCall`` list."""
+        tool_calls: list[ToolCall] = []
+        raw_tool_calls = getattr(raw, "tool_calls", None)
+        if not raw_tool_calls:
+            return tool_calls
+        for tc in raw_tool_calls:
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
+            raw_args = getattr(fn, "arguments", "{}")
+            name = getattr(fn, "name", "unknown")
+            arguments: dict[str, Any] | str = raw_args
+            if isinstance(raw_args, str):
+                try:
+                    arguments = json.loads(raw_args)
+                except Exception:
+                    pass
+            tool_calls.append(
+                ToolCall(
+                    id=tc.id,
+                    name=name,
+                    arguments=arguments,
+                )
+            )
+        return tool_calls
+
     async def _generate_internal(
         self,
         messages: list[Message],
@@ -219,28 +246,7 @@ class OpenAICompatibleProvider(LLMProvider):
         choice = raw_response.choices[0]
         choice_msg = choice.message
         content = choice_msg.content
-
-        tool_calls: list[ToolCall] = []
-        if getattr(choice_msg, "tool_calls", None):
-            for tc in choice_msg.tool_calls:
-                fn = getattr(tc, "function", None)
-                if fn is None:
-                    continue
-                raw_args = getattr(fn, "arguments", "{}")
-                name = getattr(fn, "name", "unknown")
-                arguments: dict[str, Any] | str = raw_args
-                if isinstance(raw_args, str):
-                    try:
-                        arguments = json.loads(raw_args)
-                    except Exception:
-                        pass
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=name,
-                        arguments=arguments,
-                    )
-                )
+        tool_calls = self._parse_tool_calls(choice_msg)
 
         usage: TokenUsage | None = None
         if raw_response.usage:

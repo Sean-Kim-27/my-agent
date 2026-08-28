@@ -8,7 +8,7 @@ from agent_framework.config.settings import Settings
 from agent_framework.llm.base import LLMProvider
 from agent_framework.models.message import Message
 from agent_framework.models.response import LLMResponse, ProviderCapabilities, TokenUsage
-from agent_framework.models.tool import ToolDefinition
+from agent_framework.models.tool import ToolCall, ToolDefinition
 
 
 class MockLLMProvider(LLMProvider):
@@ -50,6 +50,11 @@ class MockLLMProvider(LLMProvider):
             provider=self.name,
             finish_reason="stop",
         )
+
+    def _parse_tool_calls(self, raw: Any) -> list[ToolCall]:
+        if isinstance(raw, list):
+            return list(raw)
+        return []
 
     async def health_check(self) -> bool:
         return self.should_fail_with is None

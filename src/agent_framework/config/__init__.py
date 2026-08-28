@@ -1,5 +1,5 @@
 """Configuration module."""
 
-from agent_framework.config.settings import Settings, get_settings
+from agent_framework.config.settings import AgentConfig, Settings, get_settings
 
-__all__ = ["Settings", "get_settings"]
+__all__ = ["AgentConfig", "Settings", "get_settings"]

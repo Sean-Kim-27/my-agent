@@ -10,11 +10,12 @@ from agent_framework.exceptions import AgentError
 from agent_framework.llm.base import LLMProvider
 from agent_framework.logging.logger import get_logger
 from agent_framework.memory.base import ConversationMemory
+from agent_framework.memory.context import ContextManager
 from agent_framework.memory.session import SessionManager
 from agent_framework.models.events import AgentRunResult, AgentStep
 from agent_framework.models.message import Message, MessageRole
 from agent_framework.models.response import LLMResponse
-from agent_framework.models.tool import ToolDefinition
+from agent_framework.models.tool import ToolCall, ToolDefinition
 from agent_framework.tools.executor import ToolExecutor
 from agent_framework.tools.registry import ToolRegistry
 
@@ -38,6 +39,7 @@ class Agent:
         default_session_id: str = "cli:default",
         max_steps: int = 10,
         callbacks: list[AgentCallbackHandler] | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self.provider = provider
         self.session_manager = session_manager or SessionManager()
@@ -54,6 +56,7 @@ class Agent:
         self.default_session_id = default_session_id
         self.max_steps = max_steps
         self.callbacks: list[AgentCallbackHandler] = callbacks or []
+        self.context_manager = context_manager
 
     def register_tool(
         self,
@@ -101,6 +104,8 @@ class Agent:
 
         messages.extend(history)
         messages.append(new_user_message)
+        if self.context_manager is not None:
+            messages = self.context_manager.fit(messages)
         return messages
 
     def _extract_thought(self, content: str | None) -> str | None:
@@ -235,8 +240,30 @@ class Agent:
                 context_messages.append(asst_tool_msg)
                 await memory.add(asst_tool_msg)
 
+                # Confirmation callback bridging tool executor and callback handlers
+                async def _confirm(call: ToolCall, step_no: int = step) -> bool:
+                    for handler in active_callbacks:
+                        try:
+                            approved = await handler.on_tool_confirmation(
+                                step=step_no,
+                                tool_name=call.name,
+                                arguments=call.arguments,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Error in callback handler "
+                                f"'{type(handler).__name__}.on_tool_confirmation': {exc}"
+                            )
+                            continue
+                        if approved is False:
+                            return False
+                    return True
+
                 # Execute all tool calls
-                tool_results = await self.tool_executor.execute_all(response.tool_calls)
+                tool_results = await self.tool_executor.execute_all(
+                    response.tool_calls,
+                    confirm=_confirm,
+                )
 
                 # Process results and inject recovery prompt feedback if an error occurred
                 for res in tool_results:

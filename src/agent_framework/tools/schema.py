@@ -118,6 +118,7 @@ def generate_tool_definition(
     func: Callable[..., Any],
     name: str | None = None,
     description: str | None = None,
+    requires_confirmation: bool = False,
 ) -> ToolDefinition:
     """Generate a ToolDefinition from a Python callable using reflection."""
     tool_name = name or getattr(func, "__name__", "unnamed_tool")
@@ -172,4 +173,5 @@ def generate_tool_definition(
         name=tool_name,
         description=tool_desc,
         parameters=schema,
+        requires_confirmation=requires_confirmation,
     )

@@ -26,6 +26,10 @@ class ToolDefinition(BaseModel):
         default_factory=lambda: ToolParameterSchema().model_dump(),
         description="JSON Schema specification for tool parameters",
     )
+    requires_confirmation: bool = Field(
+        default=False,
+        description="If True, the ToolExecutor must obtain human approval before invoking the tool.",
+    )
 
 
 class ToolCall(BaseModel):
