@@ -12,6 +12,7 @@ from agent_framework.llm.base import LLMProvider
 from agent_framework.llm.nvidia_nim_provider import NvidiaNIMProvider
 from agent_framework.llm.openai_compatible import OpenAICompatibleProvider
 from agent_framework.llm.openai_provider import OpenAIProvider
+from agent_framework.llm.runtime import ProviderRuntime
 
 
 def create_llm_provider(
@@ -34,19 +35,30 @@ def create_llm_provider(
     cfg = settings or get_settings()
     target_provider = (provider_name or cfg.llm_provider).strip().lower()
 
-    timeout = overrides.pop("timeout", cfg.request_timeout_seconds)
+    timeout = overrides.pop("timeout", cfg.provider_timeouts())
+    max_retries = overrides.pop("max_retries", cfg.agent_max_retries)
+
+    def finish(provider: LLMProvider) -> LLMProvider:
+        provider.max_retries = max_retries
+        metadata = cfg.model_metadata.get(f"{target_provider}:{provider.model}")
+        if metadata is None:
+            metadata = cfg.model_metadata.get(provider.model)
+        if metadata is not None:
+            updates = metadata.model_dump(exclude_none=True)
+            provider.capabilities = provider.capabilities.model_copy(update=updates)
+        return provider
 
     if target_provider == "openai":
         provider_auth = auth or (ApiKeyAuth(cfg.openai_api_key, provider_name="openai") if cfg.openai_api_key else None)
         model = overrides.pop("model", cfg.openai_model)
         base_url = overrides.pop("base_url", cfg.openai_base_url)
-        return OpenAIProvider(
+        return finish(OpenAIProvider(
             auth=provider_auth,
             model=model,
             base_url=base_url,
             timeout=timeout,
             **overrides,
-        )
+        ))
 
     if target_provider == "anthropic":
         provider_auth = auth or (
@@ -55,12 +67,12 @@ def create_llm_provider(
             else None
         )
         model = overrides.pop("model", cfg.anthropic_model)
-        return AnthropicProvider(
+        return finish(AnthropicProvider(
             auth=provider_auth,
             model=model,
             timeout=timeout,
             **overrides,
-        )
+        ))
 
     if target_provider == "nvidia_nim":
         provider_auth = auth or (
@@ -70,13 +82,13 @@ def create_llm_provider(
         )
         model = overrides.pop("model", cfg.nvidia_nim_model)
         base_url = overrides.pop("base_url", cfg.nvidia_nim_base_url)
-        return NvidiaNIMProvider(
+        return finish(NvidiaNIMProvider(
             auth=provider_auth,
             model=model,
             base_url=base_url,
             timeout=timeout,
             **overrides,
-        )
+        ))
 
     if target_provider == "codex":
         # Codex OAuth provider configuration
@@ -92,12 +104,12 @@ def create_llm_provider(
             oauth_auth = CodexOAuthAuth()
 
         model = overrides.pop("model", cfg.codex_model)
-        return OpenAIProvider(
+        return finish(OpenAIProvider(
             auth=oauth_auth,
             model=model,
             timeout=timeout,
             **overrides,
-        )
+        ))
 
     if target_provider in ("openai_compatible", "generic", "local", "vllm", "ollama"):
         provider_auth = auth or (
@@ -107,17 +119,41 @@ def create_llm_provider(
         )
         model = overrides.pop("model", cfg.openai_compatible_model)
         base_url = overrides.pop("base_url", cfg.openai_compatible_base_url)
-        return OpenAICompatibleProvider(
+        return finish(OpenAICompatibleProvider(
             name=target_provider,
             auth=provider_auth,
             model=model,
             base_url=base_url,
             timeout=timeout,
             **overrides,
-        )
+        ))
 
     raise ConfigurationError(
         message=f"Unsupported LLM provider: '{target_provider}'. "
         f"Supported providers are: 'openai', 'anthropic', 'nvidia_nim', 'codex', 'openai_compatible'.",
         details={"provider": target_provider},
     )
+
+
+def create_provider_runtime(
+    settings: Settings | None = None,
+    provider_name: str | None = None,
+    **overrides: Any,
+) -> LLMProvider:
+    """Create a primary provider plus the configured ordered fallback chain."""
+    cfg = settings or get_settings()
+    primary_name = (provider_name or cfg.llm_provider).strip().lower()
+    fallback_names = [name.strip().lower() for name in cfg.fallback_providers]
+    if primary_name in fallback_names:
+        raise ConfigurationError(
+            "The active provider cannot also appear in fallback_providers",
+            details={"provider": primary_name},
+        )
+    if len(set(fallback_names)) != len(fallback_names):
+        raise ConfigurationError("fallback_providers cannot contain duplicates")
+
+    primary = create_llm_provider(cfg, primary_name, **overrides)
+    if not fallback_names:
+        return primary
+    fallbacks = [create_llm_provider(cfg, name) for name in fallback_names]
+    return ProviderRuntime(primary, fallbacks)

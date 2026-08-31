@@ -102,6 +102,22 @@ for step in result.steps:
 ### Interactive CLI
 ```bash
 python -m agent_framework.main
+python -m agent_framework.main --providers
+python -m agent_framework.main --providers --check  # live endpoint health checks
+```
+
+Transient 429/5xx/timeout failures use `Retry-After` or exponential backoff
+with jitter. Configure ordered fallbacks and per-model metadata as JSON
+environment values:
+
+```env
+AGENT_MAX_RETRIES=3
+FALLBACK_PROVIDERS=["anthropic","openai_compatible"]
+MODEL_METADATA={"openai:gpt-4o-mini":{"context_window":128000,"tool_calling":true}}
+REQUEST_CONNECT_TIMEOUT_SECONDS=10
+REQUEST_READ_TIMEOUT_SECONDS=60
+REQUEST_WRITE_TIMEOUT_SECONDS=60
+REQUEST_POOL_TIMEOUT_SECONDS=10
 ```
 
 ### Discord Bot
@@ -191,7 +207,8 @@ My-Agent/
 └── tests/
     ├── __init__.py
     ├── conftest.py                    # Fixtures & MockLLMProvider
-    └── unit/
+    ├── evals/                         # 10 baseline capability evals
+    └── unit/                          # 148 unit tests
         ├── test_models.py             # Message, Response, Tool model tests
         ├── test_memory.py             # Memory CRUD & trimming tests
         ├── test_session.py            # Session isolation tests
@@ -237,4 +254,4 @@ mypy src tests
 - [x] **Phase 3**: Decoupled Discord Bot adapter (`discord.py`), async queue worker, session mapping, 2000-character safe splitting.
 - [x] **Phase 4**: Decoupled Telegram Bot adapter (`python-telegram-bot`), async polling, MarkdownV2 escaping, 4096-character safe splitting.
 - [x] **Phase 5**: Advanced ReAct execution trajectory (`run_with_trace`), lifecycle event callbacks (`AgentCallbackHandler`), autonomous error recovery prompting, streaming token generator protocols.
-- [x] **Verification**: 67 unit tests with 100% pass rate, 0 linter errors (`ruff`), 0 type errors (`mypy` strict mode).
+- [x] **Verification**: 175 tests (165 unit + 10 eval) with 100% pass rate, 0 linter errors (`ruff`), 0 type errors (`mypy` strict mode).

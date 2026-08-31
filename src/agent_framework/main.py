@@ -8,13 +8,18 @@ slash command parsing, or bot startup logic beyond dispatching.
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 
 from agent_framework.bootstrap import build_agent
 from agent_framework.config.settings import Settings, get_settings
-from agent_framework.logging.logger import get_logger
+from agent_framework.llm.factory import create_llm_provider
+from agent_framework.logging.logger import get_logger, mask_secrets
 
 
-def print_provider_status(settings: Settings) -> None:
+def print_provider_status(
+    settings: Settings,
+    health: Mapping[str, bool] | None = None,
+) -> None:
     """Display authentication and configuration status for all supported providers."""
     print("\n=== AI Agent Framework Provider Status ===")
 
@@ -22,24 +27,35 @@ def print_provider_status(settings: Settings) -> None:
     print("\n[OpenAI]")
     print(f"  Authentication : {openai_auth}")
     print(f"  Default Model  : {settings.openai_model}")
-    print(f"  Base URL       : {settings.openai_base_url}")
+    print(f"  Base URL       : {mask_secrets(settings.openai_base_url)}")
+    if health is not None:
+        print(f"  Health         : {'healthy' if health.get('openai') else 'unhealthy'}")
 
     anthropic_auth = "API Key (Configured)" if settings.anthropic_api_key else "API Key (Missing)"
     print("\n[Anthropic]")
     print(f"  Authentication : {anthropic_auth}")
     print(f"  Default Model  : {settings.anthropic_model}")
+    if health is not None:
+        print(f"  Health         : {'healthy' if health.get('anthropic') else 'unhealthy'}")
 
     nim_auth = "API Key (Configured)" if settings.nvidia_nim_api_key else "API Key (Missing)"
     print("\n[NVIDIA NIM]")
     print(f"  Authentication : {nim_auth}")
     print(f"  Default Model  : {settings.nvidia_nim_model}")
-    print(f"  Base URL       : {settings.nvidia_nim_base_url}")
+    print(f"  Base URL       : {mask_secrets(settings.nvidia_nim_base_url)}")
+    if health is not None:
+        print(f"  Health         : {'healthy' if health.get('nvidia_nim') else 'unhealthy'}")
 
     compat_auth = "API Key / Local" if settings.openai_compatible_api_key else "No Auth / Local"
     print("\n[OpenAI-Compatible (vLLM / Ollama / Local)]")
     print(f"  Authentication : {compat_auth}")
     print(f"  Default Model  : {settings.openai_compatible_model}")
-    print(f"  Base URL       : {settings.openai_compatible_base_url}")
+    print(f"  Base URL       : {mask_secrets(settings.openai_compatible_base_url)}")
+    if health is not None:
+        print(
+            f"  Health         : "
+            f"{'healthy' if health.get('openai_compatible') else 'unhealthy'}"
+        )
 
     codex_auth = (
         "OAuth Token (Configured)" if settings.codex_access_token else "OAuth (Requires Login / Token)"
@@ -47,6 +63,8 @@ def print_provider_status(settings: Settings) -> None:
     print("\n[Codex]")
     print(f"  Authentication : {codex_auth}")
     print(f"  Default Model  : {settings.codex_model}")
+    if health is not None:
+        print(f"  Health         : {'healthy' if health.get('codex') else 'unhealthy'}")
 
     discord_auth = "Configured" if settings.discord_bot_token else "Missing Token"
     print("\n[Discord Bot Integration]")
@@ -62,12 +80,27 @@ def print_provider_status(settings: Settings) -> None:
     print("\n==========================================\n")
 
 
+async def check_provider_health(settings: Settings) -> dict[str, bool]:
+    """Probe all supported provider endpoints concurrently without exposing credentials."""
+    provider_names = ("openai", "anthropic", "nvidia_nim", "openai_compatible", "codex")
+
+    async def check(name: str) -> tuple[str, bool]:
+        try:
+            provider = create_llm_provider(settings, provider_name=name, max_retries=0)
+            return name, await provider.health_check()
+        except Exception:
+            return name, False
+
+    return dict(await asyncio.gather(*(check(name) for name in provider_names)))
+
+
 async def dispatch(args: argparse.Namespace) -> None:
     """Route to the requested adapter (Discord / Telegram / CLI)."""
     settings = get_settings()
 
     if args.providers:
-        print_provider_status(settings)
+        health = await check_provider_health(settings) if args.check else None
+        print_provider_status(settings, health)
         return
 
     provider_name = args.provider or settings.llm_provider
@@ -141,6 +174,11 @@ def main() -> None:
     parser.add_argument("--system-prompt", type=str, help="System prompt override")
     parser.add_argument(
         "--providers", action="store_true", help="List all supported providers and their auth status"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Run live health checks (use with --providers)",
     )
     parser.add_argument("--discord", action="store_true", help="Launch the Discord Bot integration")
     parser.add_argument("--telegram", action="store_true", help="Launch the Telegram Bot integration")

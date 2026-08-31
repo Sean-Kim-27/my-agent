@@ -120,6 +120,35 @@ async def test_agent_multi_step_tool_loop(mock_provider: MockLLMProvider) -> Non
 
 
 @pytest.mark.asyncio
+async def test_agent_rejects_repeated_tool_call_id_before_duplicate_side_effect(
+    mock_provider: MockLLMProvider,
+) -> None:
+    registry = ToolRegistry()
+    executions = 0
+
+    @registry.tool()
+    def mutate() -> str:
+        nonlocal executions
+        executions += 1
+        return "changed"
+
+    repeated = LLMResponse(
+        content="mutate",
+        tool_calls=[ToolCall(id="same-call", name="mutate", arguments={})],
+        provider="primary",
+        model=mock_provider.model,
+    )
+    fallback_repeat = repeated.model_copy(update={"provider": "fallback"}, deep=True)
+    mock_provider.response_queue = [repeated, fallback_repeat]
+    agent = Agent(provider=mock_provider, tool_registry=registry, max_steps=3)
+
+    with pytest.raises(AgentError, match="repeat tool call ID"):
+        await agent.run("change once")
+
+    assert executions == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_max_steps_exceeded(mock_provider: MockLLMProvider) -> None:
     """Test that agent raises AgentError when max_steps is exceeded."""
     registry = ToolRegistry()

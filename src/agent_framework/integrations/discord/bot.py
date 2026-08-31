@@ -7,6 +7,7 @@ import discord
 from agent_framework.agent.agent import Agent
 from agent_framework.config.settings import Settings, get_settings
 from agent_framework.exceptions import ConfigurationError
+from agent_framework.integrations.discord.callbacks import DiscordConfirmationHandler
 from agent_framework.integrations.discord.router import (
     extract_clean_content,
     generate_session_id,
@@ -114,8 +115,17 @@ class DiscordAgentBot(discord.Client):
 
             try:
                 logger.info(f"Processing Discord request for session '{session_id}'")
+                confirmation_handler = DiscordConfirmationHandler(
+                    client=self,
+                    message=message,
+                    timeout=self.settings.discord_confirmation_timeout,
+                )
                 async with message.channel.typing():
-                    response = await self.agent.run(clean_text, session_id=session_id)
+                    response = await self.agent.run(
+                        clean_text,
+                        session_id=session_id,
+                        callbacks=[confirmation_handler],
+                    )
 
                 if response.content:
                     chunks = split_message_content(response.content, max_chunk_size=2000)

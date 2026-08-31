@@ -146,6 +146,21 @@ python -m agent_framework.main --provider nvidia_nim
 Provider 설정 상태 확인:
 ```bash
 python -m agent_framework.main --providers
+python -m agent_framework.main --providers --check  # 실제 endpoint health check
+```
+
+일시적 429/5xx/timeout에는 `Retry-After` 또는 jitter가 적용된 지수
+백오프를 사용합니다. 순차 fallback과 모델별 metadata는 환경변수의 JSON으로
+설정할 수 있습니다.
+
+```env
+AGENT_MAX_RETRIES=3
+FALLBACK_PROVIDERS=["anthropic","openai_compatible"]
+MODEL_METADATA={"openai:gpt-4o-mini":{"context_window":128000,"tool_calling":true}}
+REQUEST_CONNECT_TIMEOUT_SECONDS=10
+REQUEST_READ_TIMEOUT_SECONDS=60
+REQUEST_WRITE_TIMEOUT_SECONDS=60
+REQUEST_POOL_TIMEOUT_SECONDS=10
 ```
 
 #### 2) Discord 봇 실행
@@ -235,7 +250,8 @@ My-Agent/
 └── tests/
     ├── __init__.py
     ├── conftest.py                    # MockLLMProvider 및 테스트 픽스처
-    └── unit/                          # 67개 단위 테스트 스위트 (100% 통과)
+    ├── evals/                         # 10개 baseline capability eval
+    └── unit/                          # 148개 단위 테스트 스위트 (100% 통과)
 ```
 
 ---
@@ -264,4 +280,4 @@ mypy src tests
 - [x] **Phase 3**: `discord.py` 기반 디스코드 봇 어댑터, 비동기 큐 워커, 채널/스레드별 세션 분리, 2000자 분할
 - [x] **Phase 4**: `python-telegram-bot` 기반 텔레그램 봇 어댑터, MarkdownV2 이스케이프, 4096자 분할, 세션 분리
 - [x] **Phase 5**: ReAct Thought/Action/Observation 실행 궤적(`run_with_trace`), `AgentCallbackHandler` 이벤트 훅, 자율 에러 복구, 스트리밍 프로토콜
-- [x] **품질 검증**: 67개 단위 테스트 100% 통과, Ruff 및 MyPy 엄격 정적 검사 통과, 한/영 문서화 완료
+- [x] **품질 검증**: 175개 테스트(단위 165 + eval 10) 100% 통과, Ruff 및 MyPy 엄격 정적 검사 통과, 한/영 문서화 완료

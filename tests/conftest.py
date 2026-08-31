@@ -21,7 +21,12 @@ class MockLLMProvider(LLMProvider):
         default_response_text: str = "Hello from mock provider!",
         capabilities: ProviderCapabilities | None = None,
     ) -> None:
-        super().__init__(name=name, model=model, capabilities=capabilities or ProviderCapabilities())
+        super().__init__(
+            name=name,
+            model=model,
+            capabilities=capabilities
+            or ProviderCapabilities(tool_calling=True, streaming=True),
+        )
         self.default_response_text = default_response_text
         self.calls: list[list[Message]] = []
         self.tools_received: list[list[ToolDefinition] | None] = []

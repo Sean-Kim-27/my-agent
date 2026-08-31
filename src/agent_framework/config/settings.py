@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from agent_framework.models.response import ModelMetadata, ProviderTimeouts
+
 
 class AgentConfig(BaseModel):
     """Runtime safety knobs for the Agent orchestrator, tool executor, and LLM retries.
@@ -59,6 +61,18 @@ class Settings(BaseSettings):
         default=60.0,
         description="HTTP request timeout in seconds for LLM providers",
     )
+    request_connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    request_read_timeout_seconds: float | None = Field(default=None, gt=0)
+    request_write_timeout_seconds: float | None = Field(default=None, gt=0)
+    request_pool_timeout_seconds: float | None = Field(default=None, gt=0)
+    fallback_providers: list[str] = Field(
+        default_factory=list,
+        description="Ordered provider names used when the active provider fails.",
+    )
+    model_metadata: dict[str, ModelMetadata] = Field(
+        default_factory=dict,
+        description="Per-model metadata keyed by model or provider:model.",
+    )
 
     # Agent execution safety configuration
     agent_max_steps: int = Field(
@@ -75,6 +89,105 @@ class Settings(BaseSettings):
         default=3,
         ge=0,
         description="Retry attempts (beyond the initial call) for transient LLM API failures.",
+    )
+
+    # Phase 4 execution boundary configuration
+    execution_backend: Literal["local", "docker"] = Field(
+        default="local",
+        description="Execution backend for Phase 5 built-in tools.",
+    )
+    execution_safe_root: str = Field(
+        default=".",
+        description="Root directory that bounds all filesystem operations.",
+    )
+    execution_allow_writes: bool = Field(
+        default=False,
+        description="Allow the execution backend to perform write operations.",
+    )
+    execution_allow_destructive: bool = Field(
+        default=False,
+        description="Allow destructive operations (delete/overwrite) on the execution backend.",
+    )
+    execution_allow_subprocess: bool = Field(
+        default=False,
+        description="Allow the execution backend to spawn subprocesses.",
+    )
+    execution_env_allowlist: list[str] = Field(
+        default_factory=list,
+        description="Host environment variables that may be forwarded to subprocesses.",
+    )
+    execution_max_file_bytes: int = Field(
+        default=1_048_576,
+        gt=0,
+        description="Maximum bytes read from a single file via the execution backend.",
+    )
+    execution_max_output_bytes: int = Field(
+        default=65_536,
+        gt=0,
+        description="Maximum stdout/stderr bytes captured from a subprocess.",
+    )
+    execution_docker_image: str = Field(
+        default="python:3.12-slim",
+        description="Container image used by DockerExecutionBackend when selected.",
+    )
+    approval_default_ttl_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="Default TTL for command-approval records (seconds).",
+    )
+
+    # Phase 5 built-in tool wiring
+    enable_builtin_tools: bool = Field(
+        default=False,
+        description="Register built-in file, terminal, and web tools on the shared registry.",
+    )
+    builtin_tools_include_files: bool = Field(
+        default=True,
+        description="When built-in tools are enabled, register file tools.",
+    )
+    builtin_tools_include_terminal: bool = Field(
+        default=True,
+        description="When built-in tools are enabled, register the terminal tool.",
+    )
+    builtin_tools_include_web: bool = Field(
+        default=True,
+        description="When built-in tools are enabled, register web fetch tools.",
+    )
+
+    # Phase 6 MCP integration
+    enable_mcp: bool = Field(
+        default=False,
+        description="Enable MCP (Model Context Protocol) server integration.",
+    )
+    mcp_config_path: str | None = Field(
+        default=None,
+        description="Path to a JSON file listing MCP servers to register.",
+    )
+
+    # Context engine (Phase 8) configuration
+    context_manager_enabled: bool = Field(
+        default=True,
+        description="Attach a ContextManager to the Agent so history is fit to the provider window before each LLM call.",
+    )
+    context_strategy: Literal["trimming", "summarizing"] = Field(
+        default="trimming",
+        description="Strategy used to fit history: 'trimming' drops oldest atomic groups; 'summarizing' compresses middle turns via the active LLM provider.",
+    )
+    context_max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description="Fallback context budget in tokens when the provider does not advertise a context_window.",
+    )
+    context_headroom_ratio: float = Field(
+        default=0.2,
+        ge=0.0,
+        lt=1.0,
+        description="Fraction of the provider window reserved for the model's completion (0.2 => use 80%% of the window for prompt).",
+    )
+    context_summary_max_tokens: int = Field(
+        default=512,
+        gt=0,
+        description="Cap on tokens requested when the summarizing strategy generates a compression note.",
     )
 
     # Persistent memory backend selection
@@ -148,6 +261,11 @@ class Settings(BaseSettings):
         default=100,
         description="Maximum capacity of asynchronous message processing queue",
     )
+    discord_confirmation_timeout: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="Seconds to wait for a Discord reaction-based tool approval before rejecting.",
+    )
 
     # Telegram Integration Settings
     telegram_bot_token: str | None = Field(default=None, description="Telegram Bot Token")
@@ -158,6 +276,11 @@ class Settings(BaseSettings):
     telegram_require_mention: bool = Field(
         default=True,
         description="Whether bot must be mentioned in group/supergroup chats to trigger a response",
+    )
+    telegram_confirmation_timeout: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="Seconds to wait for a Telegram inline-button tool approval before rejecting.",
     )
 
     # Logging Settings
@@ -170,6 +293,16 @@ class Settings(BaseSettings):
             max_steps=self.agent_max_steps,
             tool_timeout=self.agent_tool_timeout,
             max_retries=self.agent_max_retries,
+        )
+
+    def provider_timeouts(self) -> ProviderTimeouts:
+        """Resolve phase-specific timeouts with the legacy scalar as fallback."""
+        scalar = self.request_timeout_seconds
+        return ProviderTimeouts(
+            connect=self.request_connect_timeout_seconds or scalar,
+            read=self.request_read_timeout_seconds or scalar,
+            write=self.request_write_timeout_seconds or scalar,
+            pool=self.request_pool_timeout_seconds or scalar,
         )
 
 

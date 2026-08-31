@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 from agent_framework.auth.api_key import ApiKeyAuth
 from agent_framework.auth.base import AuthenticationProvider
 from agent_framework.llm.openai_compatible import OpenAICompatibleProvider
-from agent_framework.models.response import ProviderCapabilities
+from agent_framework.models.response import ProviderCapabilities, ProviderTimeouts
 
 
 class NvidiaNIMProvider(OpenAICompatibleProvider):
@@ -24,7 +24,7 @@ class NvidiaNIMProvider(OpenAICompatibleProvider):
         model: str = DEFAULT_MODEL,
         base_url: str = DEFAULT_BASE_URL,
         auth: AuthenticationProvider | None = None,
-        timeout: float = 60.0,
+        timeout: float | ProviderTimeouts = 60.0,
         extra_headers: dict[str, str] | None = None,
         capabilities: ProviderCapabilities | None = None,
         client: AsyncOpenAI | None = None,

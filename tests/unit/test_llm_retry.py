@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent_framework.exceptions import ProviderUnavailableError
+from agent_framework.exceptions import RateLimitError as FrameworkRateLimitError
 from agent_framework.llm.retry import call_with_retry, is_retryable_error
 
 
@@ -72,3 +74,32 @@ async def test_call_with_retry_treats_5xx_as_retryable() -> None:
     assert result == "recovered"
     assert fn.call_count == 2
     _ = err
+
+
+async def test_call_with_retry_honors_retry_after() -> None:
+    delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    fn = AsyncMock(
+        side_effect=[
+            FrameworkRateLimitError(
+                "slow down",
+                provider="test",
+                status_code=429,
+                details={"retry_after_seconds": 2.5},
+            ),
+            "ok",
+        ]
+    )
+
+    result = await call_with_retry(fn, max_retries=1, sleep=record_sleep)
+
+    assert result == "ok"
+    assert delays == [2.5]
+
+
+def test_framework_transient_errors_are_retryable() -> None:
+    assert is_retryable_error(ProviderUnavailableError("offline", provider="test")) is True
+    assert is_retryable_error(FrameworkRateLimitError("limited", provider="test")) is True

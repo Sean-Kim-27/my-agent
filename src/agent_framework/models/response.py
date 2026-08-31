@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field
 
 from agent_framework.models.message import Message, MessageRole
@@ -24,6 +25,54 @@ class ProviderCapabilities(BaseModel):
     vision: bool = False
     json_mode: bool = True
     system_prompt_supported: bool = True
+    context_window: int | None = Field(
+        default=None,
+        gt=0,
+        description="Configured context window for this provider/model pair.",
+    )
+
+
+class ProviderTimeouts(BaseModel):
+    """Timeout budgets for each phase of an outbound provider HTTP request."""
+
+    connect: float = Field(default=10.0, gt=0)
+    read: float = Field(default=60.0, gt=0)
+    write: float = Field(default=60.0, gt=0)
+    pool: float = Field(default=10.0, gt=0)
+
+    @classmethod
+    def from_scalar(cls, timeout: float) -> "ProviderTimeouts":
+        """Create a phase-aware timeout while preserving the legacy scalar setting."""
+        return cls(connect=timeout, read=timeout, write=timeout, pool=timeout)
+
+    def to_httpx(self) -> httpx.Timeout:
+        """Convert to a standard HTTPX timeout for generic HTTP consumers."""
+        return httpx.Timeout(
+            connect=self.connect,
+            read=self.read,
+            write=self.write,
+            pool=self.pool,
+        )
+
+    def capped(self, maximum: float) -> "ProviderTimeouts":
+        """Return a copy capped for lightweight health probes."""
+        return ProviderTimeouts(
+            connect=min(self.connect, maximum),
+            read=min(self.read, maximum),
+            write=min(self.write, maximum),
+            pool=min(self.pool, maximum),
+        )
+
+
+class ModelMetadata(BaseModel):
+    """Optional per-model capability and context-window overrides."""
+
+    tool_calling: bool | None = None
+    streaming: bool | None = None
+    vision: bool | None = None
+    json_mode: bool | None = None
+    system_prompt_supported: bool | None = None
+    context_window: int | None = Field(default=None, gt=0)
 
 
 class LLMResponse(BaseModel):

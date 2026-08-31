@@ -5,6 +5,10 @@ import asyncio
 from agent_framework.agent.agent import Agent
 from agent_framework.config.settings import Settings, get_settings
 from agent_framework.exceptions import ConfigurationError
+from agent_framework.integrations.telegram.callbacks import (
+    TelegramConfirmationBroker,
+    TelegramConfirmationHandler,
+)
 from agent_framework.integrations.telegram.router import (
     escape_markdown_v2,
     extract_clean_telegram_text,
@@ -18,6 +22,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -50,6 +55,7 @@ class TelegramAgentBot:
         self.app: Application = (  # type: ignore[type-arg]
             ApplicationBuilder().token(self.token).build()
         )
+        self.confirmation_broker = TelegramConfirmationBroker()
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -59,6 +65,9 @@ class TelegramAgentBot:
         self.app.add_handler(CommandHandler("clear", self.cmd_clear))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+        )
+        self.app.add_handler(
+            CallbackQueryHandler(self.confirmation_broker.on_callback_query)
         )
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -134,7 +143,18 @@ class TelegramAgentBot:
         try:
             # Send typing action
             await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
-            response = await self.agent.run(clean_text, session_id=session_id)
+            confirmation_handler = TelegramConfirmationHandler(
+                broker=self.confirmation_broker,
+                chat_id=chat.id,
+                user_id=user.id,
+                bot=context.bot,
+                timeout=self.settings.telegram_confirmation_timeout,
+            )
+            response = await self.agent.run(
+                clean_text,
+                session_id=session_id,
+                callbacks=[confirmation_handler],
+            )
 
             if response.content:
                 chunks = split_telegram_message(response.content, max_chunk_size=4096)

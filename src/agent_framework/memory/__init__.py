@@ -3,6 +3,7 @@
 from agent_framework.memory.base import ConversationMemory
 from agent_framework.memory.context import (
     ContextManager,
+    SummarizingContextManager,
     TokenCounter,
     TokenTrimmingContextManager,
     approximate_token_count,
@@ -17,6 +18,7 @@ __all__ = [
     "InMemoryConversationMemory",
     "SQLiteConversationMemory",
     "SessionManager",
+    "SummarizingContextManager",
     "TokenCounter",
     "TokenTrimmingContextManager",
     "approximate_token_count",

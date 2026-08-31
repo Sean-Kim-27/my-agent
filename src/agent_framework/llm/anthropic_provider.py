@@ -4,6 +4,7 @@ from typing import Any
 
 import anthropic
 from anthropic import AsyncAnthropic
+from anthropic import Timeout as AnthropicTimeout
 
 from agent_framework.auth.api_key import ApiKeyAuth
 from agent_framework.auth.base import AuthenticationProvider
@@ -17,8 +18,30 @@ from agent_framework.exceptions import (
 )
 from agent_framework.llm.base import LLMProvider
 from agent_framework.models.message import Message, MessageRole
-from agent_framework.models.response import LLMResponse, ProviderCapabilities, TokenUsage
+from agent_framework.models.response import (
+    LLMResponse,
+    ProviderCapabilities,
+    ProviderTimeouts,
+    TokenUsage,
+)
 from agent_framework.models.tool import ToolCall, ToolDefinition
+
+_ANTHROPIC_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-5-haiku": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-sonnet": 200_000,
+    "claude-3-haiku": 200_000,
+    "claude-2.1": 200_000,
+    "claude-2": 100_000,
+}
+
+
+def _lookup_anthropic_window(model: str) -> int | None:
+    for prefix, window in _ANTHROPIC_CONTEXT_WINDOWS.items():
+        if model.startswith(prefix):
+            return window
+    return None
 
 
 class AnthropicProvider(LLMProvider):
@@ -31,7 +54,7 @@ class AnthropicProvider(LLMProvider):
         api_key: str | None = None,
         model: str = DEFAULT_MODEL,
         auth: AuthenticationProvider | None = None,
-        timeout: float = 60.0,
+        timeout: float | ProviderTimeouts = 60.0,
         extra_headers: dict[str, str] | None = None,
         capabilities: ProviderCapabilities | None = None,
         client: AsyncAnthropic | None = None,
@@ -50,11 +73,19 @@ class AnthropicProvider(LLMProvider):
             vision=True,
             json_mode=True,
             system_prompt_supported=True,
+            context_window=_lookup_anthropic_window(model),
         )
 
         super().__init__(name="anthropic", model=model, capabilities=default_caps)
         self.auth = auth
-        self.timeout = timeout
+        self.timeouts = timeout if isinstance(timeout, ProviderTimeouts) else ProviderTimeouts.from_scalar(timeout)
+        self.timeout = self.timeouts.read
+        self.http_timeout = AnthropicTimeout(
+            connect=self.timeouts.connect,
+            read=self.timeouts.read,
+            write=self.timeouts.write,
+            pool=self.timeouts.pool,
+        )
         self.extra_headers = extra_headers or {}
         self._client = client
 
@@ -70,8 +101,9 @@ class AnthropicProvider(LLMProvider):
 
         return AsyncAnthropic(
             api_key=api_key,
-            timeout=self.timeout,
+            timeout=self.http_timeout,
             default_headers=self.extra_headers,
+            max_retries=0,
         )
 
     def _convert_messages(
@@ -292,11 +324,18 @@ class AnthropicProvider(LLMProvider):
         """Check connection to Anthropic."""
         try:
             client = await self._get_client()
+            health_timeouts = self.timeouts.capped(5.0)
             # Send a minimal 1-token test
             await client.messages.create(
                 model=self.model,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "ping"}],
+                timeout=AnthropicTimeout(
+                    connect=health_timeouts.connect,
+                    read=health_timeouts.read,
+                    write=health_timeouts.write,
+                    pool=health_timeouts.pool,
+                ),
             )
             return True
         except Exception:

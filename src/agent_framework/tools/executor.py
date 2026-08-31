@@ -1,4 +1,6 @@
-"""Tool execution engine handling synchronous/asynchronous execution, timeouts, and serialization."""
+"""Tool execution engine handling validation, policy, timeouts, retries, and serialization."""
+
+from __future__ import annotations
 
 import asyncio
 import inspect
@@ -10,27 +12,61 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent_framework.logging.logger import get_logger
-from agent_framework.models.tool import ToolCall, ToolCallResult
+from agent_framework.models.tool import (
+    ToolArtifact,
+    ToolCall,
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolRiskLevel,
+)
+from agent_framework.tools.policy import DefaultToolPolicy, ToolPolicy
 from agent_framework.tools.registry import ToolRegistry
+from agent_framework.tools.schema import validate_arguments
 
 ConfirmationCallback = Callable[[ToolCall], Awaitable[bool]]
 
 logger = get_logger("agent_framework.tools.executor")
 
+_DEFAULT_MAX_OUTPUT_BYTES = 32_768
+
 
 class ToolExecutor:
-    """Executes registered tools safely with timeout and error containment."""
+    """Executes registered tools safely with validation, policy, timeouts, and retries."""
 
     def __init__(
         self,
         registry: ToolRegistry,
         default_timeout: float = 30.0,
+        *,
+        policy: ToolPolicy | None = None,
+        max_retries: int = 0,
+        default_max_output_bytes: int | None = _DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         self.registry = registry
         self.default_timeout = default_timeout
+        self.policy: ToolPolicy = policy or DefaultToolPolicy()
+        self.max_retries = max(0, max_retries)
+        self.default_max_output_bytes = default_max_output_bytes
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._sem_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------ Helpers
+
+    def _error_result(
+        self,
+        *,
+        tool_call: ToolCall,
+        message: str,
+    ) -> ToolCallResult:
+        return ToolCallResult(
+            tool_call_id=tool_call.id,
+            name=tool_call.name,
+            content=message,
+            is_error=True,
+        )
 
     def _serialize_result(self, result: Any) -> str:
-        """Serialize a tool execution result into a string."""
         if result is None:
             return "Success (null output)"
         if isinstance(result, str):
@@ -44,129 +80,234 @@ class ToolExecutor:
                 return str(result)
         return str(result)
 
+    def _apply_output_cap(
+        self,
+        tool_call: ToolCall,
+        definition: ToolDefinition | None,
+        payload: str,
+    ) -> tuple[str, ToolArtifact | None]:
+        limit = (
+            definition.max_output_bytes
+            if definition is not None and definition.max_output_bytes is not None
+            else self.default_max_output_bytes
+        )
+        if limit is None:
+            return payload, None
+        encoded = payload.encode("utf-8")
+        if len(encoded) <= limit:
+            return payload, None
+
+        truncated = encoded[: max(0, limit - 32)].decode("utf-8", errors="ignore")
+        total = len(encoded)
+        summary = (
+            f"{truncated}\n[...truncated, {total} bytes total; full output in artifact]"
+        )
+        artifact = ToolArtifact(
+            tool_call_id=tool_call.id,
+            content_type="text/plain",
+            total_bytes=total,
+            truncated=True,
+            payload=payload,
+        )
+        return summary, artifact
+
+    async def _get_semaphore(self, definition: ToolDefinition) -> asyncio.Semaphore | None:
+        if definition.max_concurrency is None or definition.max_concurrency <= 0:
+            return None
+        async with self._sem_lock:
+            sem = self._semaphores.get(definition.name)
+            if sem is None:
+                sem = asyncio.Semaphore(definition.max_concurrency)
+                self._semaphores[definition.name] = sem
+            return sem
+
+    # ------------------------------------------------------------ Execute
+
     async def execute(
         self,
         tool_call: ToolCall,
         timeout: float | None = None,
         confirm: ConfirmationCallback | None = None,
+        *,
+        context: ToolExecutionContext | None = None,
     ) -> ToolCallResult:
-        """Execute a single ToolCall.
-
-        If the tool's ``ToolDefinition.requires_confirmation`` flag is True and a
-        ``confirm`` callback is supplied, the callback must return True or the
-        call is rejected with an error result.
-        """
+        """Validate, authorize, and execute a single ToolCall."""
         start_time = time.perf_counter()
         tool_name = tool_call.name
-        tool_id = tool_call.id
         effective_timeout = timeout or self.default_timeout
 
         func = self.registry.get(tool_name)
-        if func is None:
-            logger.warning(f"Tool not found: '{tool_name}' (call_id: {tool_id})")
-            return ToolCallResult(
-                tool_call_id=tool_id,
-                name=tool_name,
-                content=f"Error: Tool '{tool_name}' is not registered.",
-                is_error=True,
+        definition = self.registry.get_definition(tool_name)
+        if func is None or definition is None:
+            logger.warning("Tool not found or disabled: '%s'", tool_name)
+            return self._error_result(
+                tool_call=tool_call,
+                message=f"Error: Tool '{tool_name}' is not registered or is disabled.",
             )
 
-        definition = self.registry.get_definition(tool_name)
-        if definition is not None and definition.requires_confirmation:
-            if confirm is None:
-                logger.warning(
-                    f"Tool '{tool_name}' requires confirmation but no confirmation "
-                    "callback was provided; rejecting call."
-                )
-                return ToolCallResult(
-                    tool_call_id=tool_id,
-                    name=tool_name,
-                    content=(
-                        f"Error: Tool '{tool_name}' requires human confirmation, "
-                        "but no confirmation handler is configured."
-                    ),
-                    is_error=True,
-                )
-            approved = await confirm(tool_call)
-            if not approved:
-                logger.info(f"Tool '{tool_name}' call rejected by confirmation handler")
-                return ToolCallResult(
-                    tool_call_id=tool_id,
-                    name=tool_name,
-                    content=(
-                        f"Error: Human operator rejected the '{tool_name}' call. "
-                        "Adjust your plan or ask the user for guidance."
-                    ),
-                    is_error=True,
-                )
-
-        # Parse arguments
+        # ---- Argument parsing ------------------------------------------------
         raw_args = tool_call.arguments
         args_dict: dict[str, Any] = {}
         if isinstance(raw_args, str):
             try:
                 args_dict = json.loads(raw_args) if raw_args.strip() else {}
             except Exception as exc:
-                return ToolCallResult(
-                    tool_call_id=tool_id,
-                    name=tool_name,
-                    content=f"Error: Failed to parse tool arguments JSON: {exc}",
-                    is_error=True,
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=f"Error: Failed to parse tool arguments JSON: {exc}",
                 )
         elif isinstance(raw_args, dict):
             args_dict = raw_args
 
-        logger.info(f"Executing tool '{tool_name}' with args: {args_dict}")
+        # ---- Argument validation (fail closed) -------------------------------
+        cleaned_args, errors = validate_arguments(func, args_dict)
+        if errors:
+            joined = "; ".join(errors)
+            logger.warning("Argument validation failed for '%s': %s", tool_name, joined)
+            return self._error_result(
+                tool_call=tool_call,
+                message=f"Error: Invalid arguments for '{tool_name}': {joined}",
+            )
 
-        try:
-            if inspect.iscoroutinefunction(func):
-                result_coro = func(**args_dict)
-                result = await asyncio.wait_for(result_coro, timeout=effective_timeout)
-            else:
-                # Synchronous function execution in worker thread
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(func, **args_dict),
-                    timeout=effective_timeout,
+        # ---- Policy evaluation -----------------------------------------------
+        run_context = context or ToolExecutionContext(run_id="unknown", step=0)
+        decision = self.policy.evaluate(
+            call=tool_call,
+            definition=definition,
+            context=run_context,
+        )
+        if not decision.allow:
+            reason = decision.reason or "denied by policy"
+            logger.warning("Policy denied '%s': %s", tool_name, reason)
+            return self._error_result(
+                tool_call=tool_call,
+                message=f"Error: Tool '{tool_name}' was denied by policy: {reason}",
+            )
+
+        if decision.require_confirmation:
+            if confirm is None:
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=(
+                        f"Error: Tool '{tool_name}' requires human confirmation, "
+                        "but no confirmation handler is configured."
+                    ),
+                )
+            try:
+                approved = await confirm(tool_call)
+            except Exception as exc:
+                logger.error("Confirmation callback raised for '%s': %s", tool_name, exc)
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=f"Error: Confirmation handler raised {type(exc).__name__}: {exc}",
+                )
+            if not approved:
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=(
+                        f"Error: Human operator rejected the '{tool_name}' call. "
+                        "Adjust your plan or ask the user for guidance."
+                    ),
                 )
 
-            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            serialized = self._serialize_result(result)
-            logger.info(f"Tool '{tool_name}' completed in {elapsed_ms:.2f}ms")
+        # ---- Retry policy ----------------------------------------------------
+        can_retry = (
+            definition.idempotent and definition.risk_level is not ToolRiskLevel.DESTRUCTIVE
+        )
+        attempts_allowed = self.max_retries + 1 if can_retry else 1
 
+        semaphore = await self._get_semaphore(definition)
+
+        logger.info(
+            "Executing tool '%s' args=%s risk=%s idempotent=%s",
+            tool_name,
+            cleaned_args,
+            definition.risk_level.value,
+            definition.idempotent,
+        )
+
+        last_error: BaseException | None = None
+        for attempt in range(1, attempts_allowed + 1):
+            try:
+                if semaphore is not None:
+                    async with semaphore:
+                        payload = await self._invoke(func, cleaned_args, effective_timeout)
+                else:
+                    payload = await self._invoke(func, cleaned_args, effective_timeout)
+            except TimeoutError as exc:
+                last_error = exc
+                logger.warning(
+                    "Tool '%s' timed out after %.2fs (attempt %d/%d)",
+                    tool_name,
+                    effective_timeout,
+                    attempt,
+                    attempts_allowed,
+                )
+                if attempt < attempts_allowed:
+                    continue
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=f"Error: Tool '{tool_name}' timed out after {effective_timeout}s",
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.error(
+                    "Tool '%s' raised %s on attempt %d/%d",
+                    tool_name,
+                    type(exc).__name__,
+                    attempt,
+                    attempts_allowed,
+                    exc_info=True,
+                )
+                if attempt < attempts_allowed:
+                    continue
+                return self._error_result(
+                    tool_call=tool_call,
+                    message=f"Error executing tool '{tool_name}': {type(exc).__name__}: {exc}",
+                )
+
+            serialized = self._serialize_result(payload)
+            summary, artifact = self._apply_output_cap(tool_call, definition, serialized)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            logger.info("Tool '%s' completed in %.2fms", tool_name, elapsed_ms)
             return ToolCallResult(
-                tool_call_id=tool_id,
-                name=tool_name,
-                content=serialized,
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=summary,
                 is_error=False,
+                artifact=artifact,
             )
 
-        except TimeoutError:
-            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            msg = f"Error: Tool '{tool_name}' timed out after {effective_timeout}s"
-            logger.error(msg)
-            return ToolCallResult(
-                tool_call_id=tool_id,
-                name=tool_name,
-                content=msg,
-                is_error=True,
-            )
-        except Exception as exc:
-            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            msg = f"Error executing tool '{tool_name}': {type(exc).__name__}: {exc}"
-            logger.error(msg, exc_info=True)
-            return ToolCallResult(
-                tool_call_id=tool_id,
-                name=tool_name,
-                content=msg,
-                is_error=True,
-            )
+        # Unreachable: loop always returns; keep for type checker.
+        return self._error_result(
+            tool_call=tool_call,
+            message=f"Error executing tool '{tool_name}': {last_error!r}",
+        )
+
+    async def _invoke(
+        self,
+        func: Callable[..., Any],
+        cleaned_args: dict[str, Any],
+        effective_timeout: float,
+    ) -> Any:
+        if inspect.iscoroutinefunction(func):
+            return await asyncio.wait_for(func(**cleaned_args), timeout=effective_timeout)
+        return await asyncio.wait_for(
+            asyncio.to_thread(func, **cleaned_args),
+            timeout=effective_timeout,
+        )
 
     async def execute_all(
         self,
         tool_calls: list[ToolCall],
         timeout: float | None = None,
         confirm: ConfirmationCallback | None = None,
+        *,
+        context: ToolExecutionContext | None = None,
     ) -> list[ToolCallResult]:
         """Execute multiple tool calls concurrently."""
-        tasks = [self.execute(tc, timeout=timeout, confirm=confirm) for tc in tool_calls]
+        tasks = [
+            self.execute(tc, timeout=timeout, confirm=confirm, context=context)
+            for tc in tool_calls
+        ]
         return await asyncio.gather(*tasks)

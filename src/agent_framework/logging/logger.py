@@ -8,10 +8,21 @@ from typing import Any
 
 # Patterns to identify and mask sensitive tokens and credentials
 _SECRET_PATTERNS = [
+    (
+        re.compile(r"(https?://)[^/\s:@]+:[^@\s/]+@", re.IGNORECASE),
+        r"\1***:***@",
+    ),
     (re.compile(r"(Bearer\s+)[A-Za-z0-9_\-\.]{8,}", re.IGNORECASE), r"\1***MASKED***"),
     (re.compile(r"(sk-[A-Za-z0-9_\-]{8,})"), r"***MASKED_KEY***"),
     (re.compile(r"(nvapi-[A-Za-z0-9_\-]{8,})"), r"***MASKED_NIM_KEY***"),
     (re.compile(r"(['\"]?(?:api[_-]?key|access_token|refresh_token|secret|password|authorization)['\"]?\s*[:=]\s*['\"])([^'\"]+)(['\"])", re.IGNORECASE), r"\1***MASKED***\3"),
+    (
+        re.compile(
+            r"([?&](?:api[_-]?key|access_token|refresh_token|token|secret|password)=)[^&#\s]+",
+            re.IGNORECASE,
+        ),
+        r"\1***MASKED***",
+    ),
 ]
 
 
@@ -55,13 +66,13 @@ class SecretMaskingFormatter(logging.Formatter):
                     log_payload[key] = mask_secrets(str(val)) if isinstance(val, str) else val
 
             if record.exc_info:
-                log_payload["exception"] = self.formatException(record.exc_info)
+                log_payload["exception"] = mask_secrets(self.formatException(record.exc_info))
             return json.dumps(log_payload, ensure_ascii=False)
 
         # Standard console format
         log_line = f"[{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}] [{record.levelname}] [{record.name}]: {masked_msg}"
         if record.exc_info:
-            log_line += "\n" + self.formatException(record.exc_info)
+            log_line += "\n" + mask_secrets(self.formatException(record.exc_info))
         return log_line
 
 

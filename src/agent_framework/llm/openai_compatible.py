@@ -10,6 +10,7 @@ from typing import Any
 
 import openai
 from openai import AsyncOpenAI
+from openai import Timeout as OpenAITimeout
 
 from agent_framework.auth.base import AuthenticationProvider
 from agent_framework.exceptions import (
@@ -21,9 +22,15 @@ from agent_framework.exceptions import (
     RateLimitError,
 )
 from agent_framework.llm.base import LLMProvider
+from agent_framework.llm.errors import normalize_provider_error
 from agent_framework.models.events import StreamChunk
 from agent_framework.models.message import Message, MessageRole
-from agent_framework.models.response import LLMResponse, ProviderCapabilities, TokenUsage
+from agent_framework.models.response import (
+    LLMResponse,
+    ProviderCapabilities,
+    ProviderTimeouts,
+    TokenUsage,
+)
 from agent_framework.models.tool import ToolCall, ToolDefinition
 
 
@@ -36,7 +43,7 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str = "default-model",
         base_url: str = "http://localhost:8000/v1",
         auth: AuthenticationProvider | None = None,
-        timeout: float = 60.0,
+        timeout: float | ProviderTimeouts = 60.0,
         extra_headers: dict[str, str] | None = None,
         capabilities: ProviderCapabilities | None = None,
         client: AsyncOpenAI | None = None,
@@ -50,7 +57,14 @@ class OpenAICompatibleProvider(LLMProvider):
         super().__init__(name=name, model=model, capabilities=default_caps)
         self.base_url = base_url.rstrip("/")
         self.auth = auth
-        self.timeout = timeout
+        self.timeouts = timeout if isinstance(timeout, ProviderTimeouts) else ProviderTimeouts.from_scalar(timeout)
+        self.timeout = self.timeouts.read
+        self.http_timeout = OpenAITimeout(
+            connect=self.timeouts.connect,
+            read=self.timeouts.read,
+            write=self.timeouts.write,
+            pool=self.timeouts.pool,
+        )
         self.extra_headers = extra_headers or {}
         self._client = client
 
@@ -73,8 +87,9 @@ class OpenAICompatibleProvider(LLMProvider):
         return AsyncOpenAI(
             api_key=api_key,
             base_url=self.base_url,
-            timeout=self.timeout,
+            timeout=self.http_timeout,
             default_headers=headers,
+            max_retries=0,
         )
 
     def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
@@ -182,7 +197,7 @@ class OpenAICompatibleProvider(LLMProvider):
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": formatted_messages,
-            "timeout": self.timeout,
+            "timeout": self.http_timeout,
             **kwargs,
         }
         if formatted_tools:
@@ -273,22 +288,25 @@ class OpenAICompatibleProvider(LLMProvider):
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
         """Stream tokens using OpenAI streaming completion protocol."""
-        client = await self._get_client()
-        formatted_messages = self._convert_messages(messages)
+        self.validate_streaming()
+        self.validate_request(messages, tools=tools, **kwargs)
         model = kwargs.pop("model", self.model)
-        formatted_tools = self._convert_tools(tools)
-
-        call_kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": formatted_messages,
-            "timeout": self.timeout,
-            "stream": True,
-            **kwargs,
-        }
-        if formatted_tools:
-            call_kwargs["tools"] = formatted_tools
 
         try:
+            client = await self._get_client()
+            formatted_messages = self._convert_messages(messages)
+            formatted_tools = self._convert_tools(tools)
+
+            call_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": formatted_messages,
+                "timeout": self.http_timeout,
+                "stream": True,
+                **kwargs,
+            }
+            if formatted_tools:
+                call_kwargs["tools"] = formatted_tools
+
             stream = await client.chat.completions.create(**call_kwargs)
             async for chunk in stream:
                 if not chunk.choices:
@@ -298,16 +316,22 @@ class OpenAICompatibleProvider(LLMProvider):
                 if delta_content:
                     yield StreamChunk(content=delta_content, is_finished=False)
             yield StreamChunk(content="", is_finished=True)
-        except Exception:
-            # Fallback to base generate_stream if streaming endpoint fails
-            async for chunk in super().generate_stream(messages, tools=tools, **kwargs):
-                yield chunk
+        except Exception as exc:
+            raise normalize_provider_error(exc, provider=self.name, model=model) from exc
 
     async def health_check(self) -> bool:
         """Perform a lightweight health check by querying the models endpoint."""
         try:
             client = await self._get_client()
-            await client.models.list(timeout=min(self.timeout, 5.0))
+            health_timeouts = self.timeouts.capped(5.0)
+            await client.models.list(
+                timeout=OpenAITimeout(
+                    connect=health_timeouts.connect,
+                    read=health_timeouts.read,
+                    write=health_timeouts.write,
+                    pool=health_timeouts.pool,
+                )
+            )
             return True
         except Exception:
             return False
