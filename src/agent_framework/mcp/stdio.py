@@ -24,7 +24,10 @@ from agent_framework.mcp.errors import (
     MCPProtocolError,
     MCPToolError,
 )
-from agent_framework.mcp.protocol import protocol_version
+from agent_framework.mcp.protocol import (
+    negotiate_protocol_version,
+    protocol_version,
+)
 from agent_framework.mcp.transport import MCPToolInfo
 
 logger = get_logger("agent_framework.mcp.stdio")
@@ -51,6 +54,13 @@ class StdioSubprocessTransport:
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 0
         self._lock = asyncio.Lock()
+        self._negotiated_version: str | None = None
+
+    @property
+    def negotiated_version(self) -> str | None:
+        """The protocol version the server agreed to during ``initialize``."""
+
+        return self._negotiated_version
 
     # ------------------------------------------------------------ Lifecycle
 
@@ -83,7 +93,11 @@ class StdioSubprocessTransport:
             "capabilities": {},
             "clientInfo": {"name": "agent-framework", "version": "0.3.0"},
         }
-        await self._request("initialize", params)
+        result = await self._request("initialize", params)
+        # Negotiate: honor the server's chosen protocolVersion or fail closed.
+        self._negotiated_version = negotiate_protocol_version(
+            result.get("protocolVersion")
+        )
         # notifications/initialized has no id and expects no response.
         await self._notify("notifications/initialized", {})
 

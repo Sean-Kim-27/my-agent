@@ -27,7 +27,12 @@ from agent_framework.execution.backend import (
     FileReadSpec,
     FileWriteSpec,
 )
-from agent_framework.execution.paths import PathSafetyError, resolve_safe_path
+from agent_framework.execution.paths import (
+    PathSafetyError,
+    open_beneath,
+    resolve_safe_path,
+    unlink_beneath,
+)
 from agent_framework.logging.logger import get_logger
 
 logger = get_logger("agent_framework.execution.local")
@@ -70,16 +75,41 @@ class LocalExecutionBackend:
             raise ExecutionDeniedError(str(exc)) from exc
 
     async def read_file(self, spec: FileReadSpec) -> FileReadResult:
-        resolved = self._resolve(spec.path)
+        # Validate first so PathSafetyError surfaces consistently; then use
+        # a descriptor-relative open so a concurrent symlink swap between
+        # validation and the actual open cannot redirect the read.
+        self._resolve(spec.path)
         limit = spec.max_bytes or self._config.max_file_bytes
 
         def _read() -> FileReadResult:
-            data = resolved.read_bytes()
-            total = len(data)
-            truncated = False
-            if total > limit:
-                data = data[:limit]
-                truncated = True
+            try:
+                fd = open_beneath(self._safe_root, spec.path, os.O_RDONLY)
+            except PathSafetyError as exc:
+                raise ExecutionDeniedError(str(exc)) from exc
+            try:
+                chunks: list[bytes] = []
+                total = 0
+                truncated = False
+                while True:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        overflow = total - limit
+                        chunks.append(chunk[: len(chunk) - overflow])
+                        # Continue draining to report accurate total_bytes.
+                        truncated = True
+                        while True:
+                            more = os.read(fd, 65536)
+                            if not more:
+                                break
+                            total += len(more)
+                        break
+                    chunks.append(chunk)
+            finally:
+                os.close(fd)
+            data = b"".join(chunks)
             return FileReadResult(
                 text=data.decode(spec.encoding, errors="replace"),
                 truncated=truncated,
@@ -93,12 +123,34 @@ class LocalExecutionBackend:
             raise ExecutionDeniedError(
                 "LocalExecutionBackend was not configured to allow writes."
             )
-        resolved = self._resolve(spec.path)
+        self._resolve(spec.path)
 
         def _write() -> None:
             if spec.create_parents:
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(spec.content, encoding=spec.encoding)
+                # Parent creation still goes through the pathlib API, but the
+                # resolved path is used only to compute the parent directory
+                # — the write itself is descriptor-relative below.
+                resolved_for_parent = resolve_safe_path(spec.path, safe_root=self._safe_root)
+                resolved_for_parent.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                fd = open_beneath(
+                    self._safe_root,
+                    spec.path,
+                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                    mode=0o644,
+                )
+            except PathSafetyError as exc:
+                raise ExecutionDeniedError(str(exc)) from exc
+            try:
+                data = spec.content.encode(spec.encoding)
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        break
+                    view = view[written:]
+            finally:
+                os.close(fd)
 
         await asyncio.to_thread(_write)
 
@@ -107,8 +159,15 @@ class LocalExecutionBackend:
             raise ExecutionDeniedError(
                 "LocalExecutionBackend was not configured to allow destructive operations."
             )
-        resolved = self._resolve(path)
-        await asyncio.to_thread(resolved.unlink)
+        self._resolve(path)
+
+        def _delete() -> None:
+            try:
+                unlink_beneath(self._safe_root, path)
+            except PathSafetyError as exc:
+                raise ExecutionDeniedError(str(exc)) from exc
+
+        await asyncio.to_thread(_delete)
 
     # ------------------------------------------------------------ Subprocess
 

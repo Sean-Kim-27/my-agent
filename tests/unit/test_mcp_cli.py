@@ -84,7 +84,11 @@ async def test_http_transport_negotiates_session_and_sends_initialized() -> None
             return httpx.Response(
                 200,
                 headers={"Mcp-Session-Id": "session-123"},
-                json={"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {"protocolVersion": "2024-11-05"},
+                },
             )
         if payload["method"] == "notifications/initialized":
             return httpx.Response(202)
@@ -109,6 +113,76 @@ async def test_http_transport_negotiates_session_and_sends_initialized() -> None
     assert json.loads(requests[1].content)["method"] == "notifications/initialized"
     assert requests[1].headers["Mcp-Session-Id"] == "session-123"
     assert requests[2].headers["Mcp-Session-Id"] == "session-123"
+
+
+async def test_http_transport_negotiates_new_version_and_sends_protocol_header() -> None:
+    """Post-initialize requests must echo MCP-Protocol-Version when 2025-03-26+."""
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content)
+        if payload["method"] == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {"protocolVersion": "2025-06-18"},
+                },
+            )
+        if payload["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {"tools": []},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = HttpMCPTransport(url="https://example.test/mcp", client=client)
+    await transport.connect(1)
+    await transport.initialize(1)
+    await transport.list_tools()
+    await transport.close()
+    await client.aclose()
+
+    assert transport.negotiated_version == "2025-06-18"
+    # initialize predates negotiation, so no header expected there.
+    assert "MCP-Protocol-Version" not in requests[0].headers
+    # notifications/initialized and tools/list must include the header.
+    assert requests[1].headers.get("MCP-Protocol-Version") == "2025-06-18"
+    assert requests[2].headers.get("MCP-Protocol-Version") == "2025-06-18"
+
+
+async def test_http_transport_rejects_unsupported_protocol_version() -> None:
+    """A server picking a revision we don't speak must fail closed."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {"protocolVersion": "1999-01-01"},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = HttpMCPTransport(url="https://example.test/mcp", client=client)
+    await transport.connect(1)
+    import pytest as _pytest
+
+    from agent_framework.mcp.errors import MCPProtocolError
+
+    with _pytest.raises(MCPProtocolError):
+        await transport.initialize(1)
+    await transport.close()
+    await client.aclose()
 
 
 async def test_real_stdio_server_connect_call_and_shutdown(tmp_path: Path) -> None:
@@ -160,7 +234,12 @@ async def test_real_streamable_http_server_connect_list_and_shutdown() -> None:
         payload = json.loads(await reader.readexactly(content_length))
         methods.append(payload["method"])
         if "id" in payload:
-            result = {"tools": []} if payload["method"] == "tools/list" else {}
+            if payload["method"] == "tools/list":
+                result: dict[str, object] = {"tools": []}
+            elif payload["method"] == "initialize":
+                result = {"protocolVersion": "2024-11-05"}
+            else:
+                result = {}
             body = json.dumps(
                 {"jsonrpc": "2.0", "id": payload["id"], "result": result}
             ).encode()

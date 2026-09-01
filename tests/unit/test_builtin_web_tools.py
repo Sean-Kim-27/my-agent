@@ -202,6 +202,76 @@ def test_http_fetch_rejects_redirect_to_private_host(
 # ---------------------------------------------------------------- HTML extract
 
 
+# ---------------------------------------------------------------- IP pinning
+
+
+def test_http_fetch_rewrites_host_to_validated_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connection must be pinned to the DNS-validated public IP.
+
+    Simulates a TOCTOU: our DNS check returns a public IP, but if the client
+    were to re-resolve at connect time it could hit a private IP. The pinned
+    transport prevents that by rewriting the URL host to the validated IP
+    while preserving the ``Host`` header and TLS SNI hostname.
+    """
+
+    _install_public_dns(monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url_host"] = request.url.host
+        captured["host_header"] = request.headers.get("host")
+        captured["sni"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200, content=b"pinned", headers={"content-type": "text/plain"})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "agent_framework.tools.builtin.web.httpx.AsyncHTTPTransport",
+        lambda *a, **k: transport,
+    )
+
+    reg = _registry_with_web()
+    fn = reg.get("builtin.web.http_fetch")
+    assert fn is not None
+    payload = json.loads(asyncio.run(fn(url="https://example.com/pin")))
+    assert payload["status_code"] == 200
+    assert captured["url_host"] == "93.184.216.34"
+    assert captured["host_header"] == "example.com"
+    assert captured["sni"] == "example.com"
+
+
+def test_http_fetch_pinning_does_not_rewrite_public_ip_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An http(s) URL that already uses a public IP literal must not be rewritten."""
+
+    _install_public_dns(monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url_host"] = request.url.host
+        return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "agent_framework.tools.builtin.web.httpx.AsyncHTTPTransport",
+        lambda *a, **k: transport,
+    )
+
+    reg = _registry_with_web()
+    fn = reg.get("builtin.web.http_fetch")
+    assert fn is not None
+    payload = json.loads(asyncio.run(fn(url="https://93.184.216.34/")))
+    assert payload["status_code"] == 200
+    assert captured["url_host"] == "93.184.216.34"
+
+
+# ---------------------------------------------------------------- HTML extract
+
+
 def test_extract_text_from_html_drops_scripts_and_styles() -> None:
     html = """
     <html><head><style>.x{color:red}</style></head>

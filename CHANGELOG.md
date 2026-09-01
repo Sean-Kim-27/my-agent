@@ -6,6 +6,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Phase 10 — Isolation-boundary hardening
+
+- Added `_PinnedIPTransport` to the built-in web fetch tool: the connection
+  is pinned to the DNS-validated public IP via URL rewrite while the
+  original hostname is preserved in the `Host` header and the httpx
+  `sni_hostname` TLS extension. A concurrent DNS mutation between
+  validation and connect can no longer steer the request to a private IP.
+- Added descriptor-relative file operations. `execution/paths.py` now
+  exposes `open_beneath` and `unlink_beneath`; every intermediate segment
+  is opened with `O_NOFOLLOW` under a pinned safe-root file descriptor and
+  absolute symlink targets are rejected. `LocalExecutionBackend` reads,
+  writes, and deletes route through the new helpers on POSIX; Windows
+  keeps the previous check-then-open flow because there is no portable
+  `openat` equivalent.
+- Added full MCP protocol-revision negotiation. `mcp/protocol.py` exports
+  `SUPPORTED_PROTOCOL_VERSIONS`, `negotiate_protocol_version`, and
+  `requires_http_version_header`. Both transports validate the server's
+  advertised `protocolVersion` and fail closed on unsupported revisions;
+  the HTTP transport sends the required `MCP-Protocol-Version` header on
+  every request when the negotiated version is 2025-03-26 or later.
+
 ### Phase 9 — `myagen` CLI and managed runtime
 
 - Added the `myagen` command router with chat/ask, doctor/version/completion,

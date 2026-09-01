@@ -8,9 +8,11 @@ The tool rejects:
 * responses larger than a configurable byte cap,
 * redirects that target a blocked address.
 
-Every redirect target is resolved and checked before use. The current httpx
-connection still resolves the hostname independently, so this is a best-effort
-boundary rather than DNS pinning against a local TOCTOU attacker.
+Every redirect target is resolved and checked before use. The connection is
+then pinned to the validated IP address via a custom httpx transport
+(:class:`_PinnedIPTransport`) so a DNS TOCTOU attacker cannot re-resolve the
+hostname to a private address between check and connect. TLS SNI and
+certificate hostname verification still use the original hostname.
 """
 
 from __future__ import annotations
@@ -98,6 +100,76 @@ def _resolve_public_addresses(hostname: str) -> list[str]:
     return unique
 
 
+def _format_ip_for_url(ip: str) -> str:
+    """Return an IP literal suitable for the netloc of an URL.
+
+    IPv6 addresses must be wrapped in ``[…]``.
+    """
+
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(parsed, ipaddress.IPv6Address):
+        return f"[{ip}]"
+    return ip
+
+
+class _PinnedIPTransport(httpx.AsyncBaseTransport):
+    """httpx transport that pins connections to a preselected IP address.
+
+    The transport rewrites the request URL host to a caller-supplied IP,
+    preserves the original hostname in the ``Host`` header, and forces TLS
+    SNI / certificate verification to still use the original hostname via
+    the ``sni_hostname`` extension supported by httpx 0.28+.
+
+    A hostname absent from ``host_ip_map`` is denied fail-closed — the whole
+    point of this transport is that only pre-validated destinations reach
+    the wire.
+    """
+
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport,
+        host_ip_map: dict[str, str],
+    ) -> None:
+        self._inner = inner
+        self._host_ip_map = dict(host_ip_map)
+
+    async def handle_async_request(
+        self, request: httpx.Request
+    ) -> httpx.Response:
+        original_host = request.url.host
+        pinned_ip = self._host_ip_map.get(original_host)
+        if pinned_ip is None:
+            raise WebFetchError(
+                f"Refusing to fetch '{original_host}': "
+                "connection not pinned to a validated IP."
+            )
+
+        # Skip rewrite if the URL host is already an IP literal that matches.
+        try:
+            ipaddress.ip_address(original_host)
+            already_literal = True
+        except ValueError:
+            already_literal = False
+
+        if already_literal:
+            # Still route through the inner transport as-is.
+            return await self._inner.handle_async_request(request)
+
+        # Rewrite the request in place: httpx builds a fresh Request per
+        # attempt (redirects are handled at the client layer, above us), so
+        # mutating url/headers/extensions here is safe.
+        request.url = request.url.copy_with(host=_format_ip_for_url(pinned_ip))
+        request.headers["Host"] = original_host
+        request.extensions["sni_hostname"] = original_host
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 def _validate_url(url: str) -> tuple[str, str, int]:
     """Return ``(scheme, host, port)`` after enforcing the URL policy."""
     parts = urlsplit(url)
@@ -140,9 +212,19 @@ async def _fetch(
     hops = 0
     while True:
         scheme, host, _port = _validate_url(current_url)
-        _resolve_public_addresses(host)  # raise if any resolved address is blocked
+        addresses = _resolve_public_addresses(host)  # raise if any resolved address is blocked
+        # Pin the connection to the first validated public address so a
+        # concurrent DNS mutation cannot re-resolve `host` to a private IP
+        # between check and connect. httpx still performs TLS SNI /
+        # certificate verification against the original hostname.
+        try:
+            ipaddress.ip_address(host)
+            pinned_ip = host  # IP literal — nothing to pin.
+        except ValueError:
+            pinned_ip = addresses[0]
 
-        transport = httpx.AsyncHTTPTransport(retries=0)
+        base_transport = httpx.AsyncHTTPTransport(retries=0)
+        transport = _PinnedIPTransport(base_transport, {host: pinned_ip})
         try:
             async with httpx.AsyncClient(
                 transport=transport,

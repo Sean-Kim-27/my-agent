@@ -31,6 +31,41 @@ Validation evidence:
   was found. This is a pattern scan, not a substitute for a dedicated secret
   scanner in CI.
 
+### 2026-09-01 Phase 10 isolation-boundary update
+
+Phase 10 tackled three of the five deferred isolation items with focused
+changes rather than a new backend:
+
+- **Web fetch IP pinning.** `WebFetchTool` now wraps `httpx.AsyncHTTPTransport`
+  in a `_PinnedIPTransport` that rewrites the request URL host to the
+  DNS-validated public IP while preserving the original hostname in the
+  `Host` header and the `sni_hostname` TLS extension. A concurrent DNS
+  mutation between the validation call and the actual connect can no longer
+  redirect the request to a private address.
+- **Descriptor-relative file operations.** `execution/paths.py` gained
+  `open_beneath` and `unlink_beneath`, which walk every intermediate
+  directory with `O_NOFOLLOW` under a pinned safe-root file descriptor and
+  reject absolute symlink targets fail-closed. `LocalExecutionBackend`'s
+  `read_file`, `write_file`, and `delete_file` now route through these
+  helpers, closing the check-then-open race the Phase 5 flow left open.
+  Non-POSIX platforms (Windows) still fall back to the previous behavior
+  because there is no portable `openat` equivalent.
+- **MCP protocol-revision negotiation.** `mcp/protocol.py` now exports
+  `SUPPORTED_PROTOCOL_VERSIONS`, `negotiate_protocol_version`, and
+  `requires_http_version_header`. Both stdio and Streamable HTTP transports
+  parse the server's advertised `protocolVersion` in the `initialize`
+  result, fail closed on unsupported values, and — for HTTP on revisions
+  2025-03-26 and later — send the required `MCP-Protocol-Version` header on
+  every subsequent request. Operators can still pin a preferred client
+  version via `MCP_PROTOCOL_VERSION`.
+
+Docker isolation and forcible sync-tool cancellation remain deferred: both
+require a dedicated out-of-process boundary that is out of scope for the
+current phase.
+
+Phase 10 verification: Ruff passed; MyPy strict passed for 95 source files;
+pytest passed 326 tests (316 unit + 10 eval).
+
 ### 2026-08-31 Phase 9 remediation update
 
 The original audit below is retained as historical evidence. Phase 9.0–9.6
@@ -118,10 +153,13 @@ alias smoke test passed.
   strings can contain operational details or credentials not matched by the
   current regex set.~~ **Resolved at shipped CLI/chat and MCP HTTP boundaries:**
   user output now reports stable categories/types without remote bodies.
-- **Filesystem race window:** safe-root containment is checked before the later
+- ~~**Filesystem race window:** safe-root containment is checked before the later
   file operation. A local attacker able to swap symlinks concurrently may race
   the check; descriptor-relative operations or an isolated backend are needed
-  for a stronger boundary.
+  for a stronger boundary.~~ **Phase 10:** `LocalExecutionBackend` now uses
+  `open_beneath`/`unlink_beneath`, which walk every intermediate directory with
+  `O_NOFOLLOW` under a pinned safe-root fd on POSIX. Windows retains the previous
+  check-then-open behavior.
 - **No real Docker isolation:** `DockerExecutionBackend` remains an intentional
   loud-fail scaffold. Selecting it does not provide a usable sandbox.
 
@@ -132,18 +170,27 @@ Phase 0–9 code. They are tracked here so a dedicated isolation-backend phase
 can pick them up:
 
 - Real Docker (or equivalent) execution backend replacing the loud-fail scaffold.
-- Connection-pinned web fetch to close the DNS-validated → `httpx`-redialed
-  TOCTOU window that today's `WebFetchTool` cannot fully eliminate.
-- Descriptor-relative file operations to close the safe-root symlink race that
-  the current path-check-then-open flow leaves open.
+- ~~Connection-pinned web fetch to close the DNS-validated → `httpx`-redialed
+  TOCTOU window that today's `WebFetchTool` cannot fully eliminate.~~
+  **Phase 10:** `WebFetchTool` pins the connection to the DNS-validated IP via
+  a custom `_PinnedIPTransport`; SNI and certificate hostname verification still
+  use the original hostname.
+- ~~Descriptor-relative file operations to close the safe-root symlink race that
+  the current path-check-then-open flow leaves open.~~ **Phase 10:** POSIX
+  `LocalExecutionBackend` now walks each path component under a pinned
+  safe-root fd via `open_beneath`/`unlink_beneath`; Windows still falls back to
+  the check-then-open flow.
 - Forcible cancellation of synchronous worker-thread tools (requires an out-of-
   process boundary; asyncio cancellation alone is insufficient).
-- Full MCP protocol-revision negotiation (parsing the server's advertised
+- ~~Full MCP protocol-revision negotiation (parsing the server's advertised
   `protocolVersion` and adjusting per-revision headers/session rules).
   The current transports advertise `2024-11-05` by default; operators can point
   at another revision via the `MCP_PROTOCOL_VERSION` environment variable, but
   automatic negotiation and revision-specific transport behavior still need a
-  dedicated interoperability effort.
+  dedicated interoperability effort.~~ **Phase 10:** both transports parse the
+  server's returned `protocolVersion`, reject unsupported revisions
+  fail-closed, and the HTTP transport sends the `MCP-Protocol-Version` header on
+  every request when the negotiated version is 2025-03-26 or later.
 
 ---
 
@@ -212,16 +259,21 @@ Residual risks implied by `docs/architecture.md` and the fallback design:
 
 - `apply_patch`는 unified-diff 다중 hunk가 아닌 단일 find/replace 방식이라
   대규모 리팩터에는 여러 번 호출이 필요하다.
-- 웹 도구는 SNI/IP pinning까지는 하지 않아 TOCTOU 이론적 위험이 남아있다
+- ~~웹 도구는 SNI/IP pinning까지는 하지 않아 TOCTOU 이론적 위험이 남아있다
   (요청 시점 DNS 재해석). Phase 6 MCP HTTP transport에서 커스텀 transport
-  로 IP 강제 pinning 검토 여지.
+  로 IP 강제 pinning 검토 여지.~~ **Phase 10:** `_PinnedIPTransport`로
+  DNS-검증된 IP에 연결을 고정하고 SNI/Host 헤더는 원본 hostname을 유지한다.
 - Docker backend는 여전히 stub이라 built-in tool은 사실상 local backend
   전용.
 
 ## Phase 6 — MCP (Model Context Protocol) integration
 
 - 실제 상용 MCP 서버(Claude Desktop 등)와의 상호운용은 별도 통합 테스트
-  필요 — 프로토콜 버전 `2024-11-05` 하드코딩.
+  필요. **Phase 10:** 클라이언트는 preferred version을 `2024-11-05`로 광고하지만
+  `MCP_PROTOCOL_VERSION` env로 override 가능하고, 서버가 `initialize`에서
+  반환한 `protocolVersion`을 `SUPPORTED_PROTOCOL_VERSIONS`
+  (`2024-11-05`, `2025-03-26`, `2025-06-18`)에 대해 검증한다. HTTP transport는
+  2025-03-26 이상에서 `MCP-Protocol-Version` 헤더를 자동 부착한다.
 - HTTP 트랜스포트는 최신 Streamable HTTP만 지원 — legacy HTTP+SSE 미지원.
 - 공식 MCP SDK를 lockfile에 고정하지 않았음(자체 JSON-RPC 구현). 필요 시
   후속 작업에서 SDK 어댑터 추가 가능.

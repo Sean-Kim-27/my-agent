@@ -17,7 +17,11 @@ from agent_framework.mcp.errors import (
     MCPProtocolError,
     MCPToolError,
 )
-from agent_framework.mcp.protocol import protocol_version
+from agent_framework.mcp.protocol import (
+    negotiate_protocol_version,
+    protocol_version,
+    requires_http_version_header,
+)
 from agent_framework.mcp.stdio import _extract_text
 from agent_framework.mcp.transport import MCPToolInfo
 
@@ -40,6 +44,13 @@ class HttpMCPTransport:
         self._owns_client = client is None
         self._next_id = 0
         self._session_id: str | None = None
+        self._negotiated_version: str | None = None
+
+    @property
+    def negotiated_version(self) -> str | None:
+        """The protocol version the server agreed to during ``initialize``."""
+
+        return self._negotiated_version
 
     async def connect(self, timeout: float) -> None:
         if self._client is None:
@@ -51,7 +62,12 @@ class HttpMCPTransport:
             "capabilities": {},
             "clientInfo": {"name": "agent-framework", "version": "0.3.0"},
         }
-        await self._request("initialize", params, timeout=timeout)
+        result = await self._request("initialize", params, timeout=timeout)
+        # Negotiate: honor whatever the server picked, fail closed if the
+        # picked version is not one we know how to speak.
+        self._negotiated_version = negotiate_protocol_version(
+            result.get("protocolVersion")
+        )
         await self._notify("notifications/initialized", {}, timeout=timeout)
 
     async def list_tools(self) -> list[MCPToolInfo]:
@@ -109,6 +125,11 @@ class HttpMCPTransport:
             headers = {"Content-Type": "application/json", **self._headers}
             if self._session_id:
                 headers["Mcp-Session-Id"] = self._session_id
+            if (
+                self._negotiated_version is not None
+                and requires_http_version_header(self._negotiated_version)
+            ):
+                headers["MCP-Protocol-Version"] = self._negotiated_version
             response = await self._client.post(
                 self._url,
                 json=body,
@@ -152,6 +173,11 @@ class HttpMCPTransport:
         headers = {"Content-Type": "application/json", **self._headers}
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
+        if (
+            self._negotiated_version is not None
+            and requires_http_version_header(self._negotiated_version)
+        ):
+            headers["MCP-Protocol-Version"] = self._negotiated_version
         response = await self._client.post(
             self._url,
             json={"jsonrpc": "2.0", "method": method, "params": params},
