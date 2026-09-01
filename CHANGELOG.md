@@ -28,6 +28,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   writes, and quarantine of legacy incomplete tool turns.
 - Added recursive credential-field redaction and removed summarization shielding
   so cancellation drains the active Provider request.
+- Fixed Python 3.11 parsing of the documented MCP stdio `-- <argv...>` boundary,
+  and pinned CI to Node 24-based Checkout and setup-uv action releases.
 
 ### Phase 8 — Context engine and compression
 

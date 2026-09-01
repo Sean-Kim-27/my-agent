@@ -193,6 +193,29 @@ def build_parser(*, prog: str = "myagen") -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_args(parser: argparse.ArgumentParser, raw_args: list[str]) -> argparse.Namespace:
+    """Parse CLI arguments while preserving stdio commands after ``--``.
+
+    Python 3.11's ``argparse`` does not consistently hand a separator and its
+    trailing values to a ``nargs='*'`` positional nested under subparsers.  MCP
+    stdio commands need those values verbatim, including option-looking values,
+    so split that documented boundary before asking argparse to parse options.
+    """
+    arguments = raw_args or ["chat"]
+    separator = arguments.index("--") if "--" in arguments else None
+    if separator is not None:
+        prefix = arguments[:separator]
+        is_mcp_add = any(
+            prefix[index : index + 2] == ["mcp", "add"] for index in range(len(prefix) - 1)
+        )
+        if is_mcp_add:
+            parsed = parser.parse_args(prefix)
+            if parsed.command == "mcp" and parsed.mcp_command == "add" and parsed.stdio:
+                parsed.argv = arguments[separator + 1 :]
+                return parsed
+    return parser.parse_args(arguments)
+
+
 async def _run_chat(
     args: argparse.Namespace,
     settings: Settings,
@@ -244,7 +267,7 @@ def run(
 ) -> int:
     raw_args = list(argv if argv is not None else sys.argv[1:])
     parser = build_parser(prog=prog)
-    args = parser.parse_args(raw_args or ["chat"])
+    args = _parse_args(parser, raw_args)
     output = OutputWriter(json_mode=bool(args.json))
     resolved_paths = paths or ConfigPaths.discover()
     secrets = secret_store or KeyringSecretStore()
