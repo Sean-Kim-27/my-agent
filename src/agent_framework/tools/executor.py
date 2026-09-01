@@ -11,7 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agent_framework.logging.logger import get_logger
+from agent_framework.execution.approval import ApprovalService
+from agent_framework.logging.logger import get_logger, redact_sensitive_data
 from agent_framework.models.tool import (
     ToolArtifact,
     ToolCall,
@@ -40,12 +41,14 @@ class ToolExecutor:
         default_timeout: float = 30.0,
         *,
         policy: ToolPolicy | None = None,
+        approval_service: ApprovalService | None = None,
         max_retries: int = 0,
         default_max_output_bytes: int | None = _DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         self.registry = registry
         self.default_timeout = default_timeout
         self.policy: ToolPolicy = policy or DefaultToolPolicy()
+        self.approval_service = approval_service
         self.max_retries = max(0, max_retries)
         self.default_max_output_bytes = default_max_output_bytes
         self._semaphores: dict[str, asyncio.Semaphore] = {}
@@ -193,22 +196,45 @@ class ToolExecutor:
                         "but no confirmation handler is configured."
                     ),
                 )
+            approval_request = None
+            actor = run_context.actor or run_context.session_id or "unknown"
+            approval_service = self.approval_service
+            if approval_service is not None:
+                approval_request = approval_service.request(
+                    tool_name=tool_name,
+                    arguments=cleaned_args,
+                    actor=actor,
+                )
             try:
                 approved = await confirm(tool_call)
             except Exception as exc:
+                if approval_request is not None and approval_service is not None:
+                    approval_service.reject(
+                        approval_request.id,
+                        approver=actor,
+                        reason="confirmation handler failed",
+                    )
                 logger.error("Confirmation callback raised for '%s': %s", tool_name, exc)
                 return self._error_result(
                     tool_call=tool_call,
                     message=f"Error: Confirmation handler raised {type(exc).__name__}: {exc}",
                 )
             if not approved:
+                if approval_request is not None and approval_service is not None:
+                    approval_service.reject(
+                        approval_request.id,
+                        approver=actor,
+                        reason="rejected by confirmation handler",
+                    )
                 return self._error_result(
                     tool_call=tool_call,
                     message=(
                         f"Error: Human operator rejected the '{tool_name}' call. "
                         "Adjust your plan or ask the user for guidance."
-                    ),
+                        ),
                 )
+            if approval_request is not None and approval_service is not None:
+                approval_service.approve(approval_request.id, approver=actor)
 
         # ---- Retry policy ----------------------------------------------------
         can_retry = (
@@ -221,7 +247,7 @@ class ToolExecutor:
         logger.info(
             "Executing tool '%s' args=%s risk=%s idempotent=%s",
             tool_name,
-            cleaned_args,
+            redact_sensitive_data(cleaned_args),
             definition.risk_level.value,
             definition.idempotent,
         )

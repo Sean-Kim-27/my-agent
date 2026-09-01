@@ -139,7 +139,15 @@ class MCPManager:
                     f"MCP server '{cfg.name}' initialize timed out after {cfg.init_timeout}s"
                 ) from exc
 
-            tools = await entry.transport.list_tools()
+            try:
+                tools = await asyncio.wait_for(
+                    entry.transport.list_tools(),
+                    timeout=cfg.init_timeout,
+                )
+            except TimeoutError as exc:
+                raise MCPConnectionError(
+                    f"MCP server '{cfg.name}' tools/list timed out after {cfg.init_timeout}s"
+                ) from exc
             await self._register_tools(entry, tools)
             entry.status.connected = True
             entry.status.last_error = None
@@ -149,10 +157,18 @@ class MCPManager:
                 len(entry.status.registered_tools),
             )
         except MCPError as exc:
+            try:
+                await entry.transport.close()
+            except Exception:  # noqa: BLE001
+                pass
             entry.status.connected = False
             entry.status.last_error = exc
             logger.warning("MCP server '%s' failed to connect: %s", cfg.name, exc)
         except Exception as exc:  # noqa: BLE001 - convert to structured error
+            try:
+                await entry.transport.close()
+            except Exception:  # noqa: BLE001
+                pass
             wrapped = MCPConnectionError(
                 f"MCP server '{cfg.name}' failed to connect: {exc}"
             )

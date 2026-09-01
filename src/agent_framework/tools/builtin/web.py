@@ -8,9 +8,9 @@ The tool rejects:
 * responses larger than a configurable byte cap,
 * redirects that target a blocked address.
 
-Every DNS resolution is performed by the tool itself, and the connection
-is pinned to the resolved IP so a hostile DNS server cannot swap the
-address between our check and ``httpx``'s own resolution.
+Every redirect target is resolved and checked before use. The current httpx
+connection still resolves the hostname independently, so this is a best-effort
+boundary rather than DNS pinning against a local TOCTOU attacker.
 """
 
 from __future__ import annotations

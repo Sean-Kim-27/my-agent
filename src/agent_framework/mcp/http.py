@@ -40,6 +40,7 @@ class HttpMCPTransport:
         self._client = client
         self._owns_client = client is None
         self._next_id = 0
+        self._session_id: str | None = None
 
     async def connect(self, timeout: float) -> None:
         if self._client is None:
@@ -52,6 +53,7 @@ class HttpMCPTransport:
             "clientInfo": {"name": "agent-framework", "version": "0.3.0"},
         }
         await self._request("initialize", params, timeout=timeout)
+        await self._notify("notifications/initialized", {}, timeout=timeout)
 
     async def list_tools(self) -> list[MCPToolInfo]:
         payload = await self._request("tools/list", {}, timeout=None)
@@ -105,10 +107,13 @@ class HttpMCPTransport:
             "params": params,
         }
         try:
+            headers = {"Content-Type": "application/json", **self._headers}
+            if self._session_id:
+                headers["Mcp-Session-Id"] = self._session_id
             response = await self._client.post(
                 self._url,
                 json=body,
-                headers={"Content-Type": "application/json", **self._headers},
+                headers=headers,
                 timeout=timeout if timeout is not None else self._client.timeout,
             )
         except httpx.TimeoutException as exc:
@@ -117,9 +122,10 @@ class HttpMCPTransport:
             raise MCPConnectionError(f"MCP HTTP request failed: {exc}") from exc
 
         if response.status_code >= 400:
-            raise MCPConnectionError(
-                f"MCP HTTP {response.status_code}: {response.text[:200]}"
-            )
+            raise MCPConnectionError(f"MCP HTTP request failed with status {response.status_code}")
+        session_id = response.headers.get("Mcp-Session-Id")
+        if session_id:
+            self._session_id = session_id
         try:
             message = response.json()
         except json.JSONDecodeError as exc:
@@ -134,3 +140,26 @@ class HttpMCPTransport:
         if not isinstance(result, dict):
             raise MCPProtocolError(f"unexpected result type for {method}")
         return result
+
+    async def _notify(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> None:
+        if self._client is None:
+            raise MCPConnectionError("HTTP MCP transport not connected")
+        headers = {"Content-Type": "application/json", **self._headers}
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        response = await self._client.post(
+            self._url,
+            json={"jsonrpc": "2.0", "method": method, "params": params},
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            raise MCPConnectionError(
+                f"MCP HTTP notification failed with status {response.status_code}"
+            )

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_framework.agent.agent import Agent
+from agent_framework.config.secrets import SecretStore
 from agent_framework.config.settings import AgentConfig, Settings
 from agent_framework.execution.approval import ApprovalService
 from agent_framework.execution.backend import ExecutionBackend
@@ -121,14 +122,14 @@ def build_memory_factory(settings: Settings) -> MemoryFactory:
 
 
 def _resolve_provider_context_window(provider: LLMProvider) -> int | None:
-    """Return the maximum declared context window across a provider or its fallbacks."""
+    """Return a conservative context window across a provider fallback chain."""
     if isinstance(provider, ProviderRuntime):
         windows = [
             concrete.capabilities.context_window
             for concrete in provider.providers
             if concrete.capabilities.context_window
         ]
-        return max(windows) if windows else None
+        return min(windows) if windows else None
     return provider.capabilities.context_window
 
 
@@ -199,7 +200,11 @@ def build_agent(
             include_terminal=settings.builtin_tools_include_terminal,
             include_web=settings.builtin_tools_include_web,
         )
-    tool_executor = ToolExecutor(tool_registry, default_timeout=config.tool_timeout)
+    tool_executor = ToolExecutor(
+        tool_registry,
+        default_timeout=config.tool_timeout,
+        approval_service=build_approval_service(settings),
+    )
 
     context_manager = build_context_manager(settings, provider)
 
@@ -229,16 +234,46 @@ def load_mcp_server_configs(path: str | Path) -> list[MCPServerConfig]:
     return [MCPServerConfig.model_validate(entry) for entry in raw]
 
 
-def _transport_for(config: MCPServerConfig) -> MCPTransport:
+def _resolve_secret_refs(
+    plain: dict[str, str],
+    refs: dict[str, str],
+    secret_store: SecretStore | None,
+) -> dict[str, str]:
+    resolved = dict(plain)
+    for target, reference in refs.items():
+        if secret_store is None:
+            raise ValueError(f"MCP secret reference '{reference}' has no secret backend")
+        value = secret_store.get(reference)
+        if value is None:
+            raise ValueError(f"MCP secret reference '{reference}' is not configured")
+        resolved[target] = value
+    return resolved
+
+
+def _transport_for(
+    config: MCPServerConfig,
+    secret_store: SecretStore | None = None,
+) -> MCPTransport:
     if config.transport == "stdio":
         assert config.command is not None  # enforced by MCPServerConfig validator
         return StdioSubprocessTransport(
             command=config.command,
             env_allowlist=tuple(config.env_allowlist),
-            extra_env=config.extra_env,
+            extra_env=_resolve_secret_refs(
+                config.extra_env,
+                config.extra_env_secret_refs,
+                secret_store,
+            ),
         )
     assert config.url is not None
-    return HttpMCPTransport(url=config.url, headers=config.headers)
+    return HttpMCPTransport(
+        url=config.url,
+        headers=_resolve_secret_refs(
+            config.headers,
+            config.header_secret_refs,
+            secret_store,
+        ),
+    )
 
 
 async def bootstrap_mcp_servers(
@@ -246,6 +281,7 @@ async def bootstrap_mcp_servers(
     settings: Settings,
     tool_registry: ToolRegistry,
     configs: list[MCPServerConfig] | None = None,
+    secret_store: SecretStore | None = None,
 ) -> MCPManager | None:
     """Wire up configured MCP servers onto an existing ToolRegistry.
 
@@ -258,11 +294,24 @@ async def bootstrap_mcp_servers(
     server_configs = configs
     if server_configs is None and settings.mcp_config_path:
         server_configs = load_mcp_server_configs(settings.mcp_config_path)
+    if server_configs is None and settings.mcp_servers:
+        server_configs = [
+            MCPServerConfig.model_validate(record)
+            for record in settings.mcp_servers
+            if bool(record.get("enabled", True))
+        ]
     if not server_configs:
         return None
 
     manager = MCPManager(registry=tool_registry)
-    for cfg in server_configs:
-        await manager.add_server(cfg, transport=_transport_for(cfg))
-    await manager.connect_all()
-    return manager
+    try:
+        for cfg in server_configs:
+            await manager.add_server(
+                cfg,
+                transport=_transport_for(cfg, secret_store),
+            )
+        await manager.connect_all()
+        return manager
+    except BaseException:
+        await manager.shutdown()
+        raise

@@ -88,6 +88,7 @@ class AnthropicProvider(LLMProvider):
         )
         self.extra_headers = extra_headers or {}
         self._client = client
+        self._owns_client = client is None
 
     async def _get_client(self) -> AsyncAnthropic:
         """Lazily initialize or return the AsyncAnthropic client."""
@@ -99,12 +100,19 @@ class AnthropicProvider(LLMProvider):
             creds = await self.auth.get_credentials()
             api_key = creds.api_key or creds.token or "none"
 
-        return AsyncAnthropic(
+        self._client = AsyncAnthropic(
             api_key=api_key,
             timeout=self.http_timeout,
             default_headers=self.extra_headers,
             max_retries=0,
         )
+        return self._client
+
+    async def close(self) -> None:
+        """Close only an SDK client created by this provider."""
+        if self._client is not None and self._owns_client:
+            await self._client.close()
+            self._client = None
 
     def _convert_messages(
         self, messages: list[Message]

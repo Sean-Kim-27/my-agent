@@ -24,6 +24,10 @@ _SECRET_PATTERNS = [
         r"\1***MASKED***",
     ),
 ]
+_SENSITIVE_FIELD = re.compile(
+    r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)",
+    re.IGNORECASE,
+)
 
 
 def mask_secrets(text: str) -> str:
@@ -34,6 +38,26 @@ def mask_secrets(text: str) -> str:
     for pattern, replacement in _SECRET_PATTERNS:
         masked = pattern.sub(replacement, masked)
     return masked
+
+
+def redact_sensitive_data(value: Any) -> Any:
+    """Recursively redact values whose field names indicate credentials."""
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "***MASKED***"
+                if _SENSITIVE_FIELD.search(str(key))
+                else redact_sensitive_data(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive_data(item) for item in value)
+    if isinstance(value, str):
+        return mask_secrets(value)
+    return value
 
 
 class SecretMaskingFormatter(logging.Formatter):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from agent_framework.exceptions import FallbackExhaustedError, LLMProviderError
@@ -29,11 +30,14 @@ class ProviderRuntime(LLMProvider):
             vision=any(p.capabilities.vision for p in providers),
             json_mode=any(p.capabilities.json_mode for p in providers),
             system_prompt_supported=any(p.capabilities.system_prompt_supported for p in providers),
-            context_window=max(
-                (p.capabilities.context_window or 0 for p in providers),
-                default=0,
-            )
-            or None,
+            context_window=min(
+                (
+                    p.capabilities.context_window
+                    for p in providers
+                    if p.capabilities.context_window is not None
+                ),
+                default=None,
+            ),
         )
         super().__init__(
             name="provider_runtime",
@@ -79,3 +83,10 @@ class ProviderRuntime(LLMProvider):
             provider.name: await provider.health_check()
             for provider in self.providers
         }
+
+    async def close(self) -> None:
+        """Close all concrete providers owned by the runtime."""
+        await asyncio.gather(
+            *(provider.close() for provider in self.providers),
+            return_exceptions=True,
+        )

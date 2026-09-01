@@ -7,7 +7,7 @@ from agent_framework.config.settings import Settings
 from agent_framework.exceptions import AgentFrameworkError
 from agent_framework.integrations.cli.callbacks import CLIConfirmationHandler
 from agent_framework.integrations.cli.router import parse_slash_command
-from agent_framework.llm.factory import create_llm_provider
+from agent_framework.lifecycle import replace_agent_provider
 from agent_framework.logging.logger import get_logger
 from agent_framework.memory.session import SessionManager
 from agent_framework.tools.registry import ToolRegistry
@@ -74,11 +74,13 @@ async def _handle_slash_command(
             print(f"Current provider: {agent.provider.name} (model: {agent.provider.model})")
         else:
             try:
-                new_provider = create_llm_provider(settings, provider_name=argument)
-                agent.provider = new_provider
-                print(f"🔄 Switched provider to: {new_provider.name} (model: {new_provider.model})")
+                await replace_agent_provider(agent, settings, argument)
+                print(
+                    f"🔄 Switched provider runtime to: {argument} "
+                    f"(model: {agent.provider.model})"
+                )
             except Exception as exc:
-                print(f"❌ Failed to switch provider: {exc}")
+                print(f"❌ Failed to switch provider ({type(exc).__name__}).")
         return current_session, False
 
     if command_name == "/info":
@@ -151,6 +153,9 @@ async def run_cli_session(
                 f"{response.latency_ms}ms) >\n{response.content}\n"
             )
         except AgentFrameworkError as err:
-            print(f"\n❌ [{type(err).__name__}]: {err}\n")
+            print(
+                f"\n❌ [{type(err).__name__}] Request failed. "
+                "Run 'myagen doctor' for diagnostics.\n"
+            )
         except Exception as exc:
-            print(f"\n❌ Unexpected error: {exc}\n")
+            print(f"\n❌ Unexpected error ({type(exc).__name__}).\n")

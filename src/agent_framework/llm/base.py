@@ -140,3 +140,7 @@ class LLMProvider(ABC):
     @abstractmethod
     async def health_check(self) -> bool:
         """Check whether the provider endpoint is healthy and accessible."""
+
+    async def close(self) -> None:
+        """Release resources owned by this provider, if any."""
+        return None

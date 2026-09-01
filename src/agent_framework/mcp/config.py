@@ -20,6 +20,7 @@ class MCPServerConfig(BaseModel):
 
     name: str = Field(..., min_length=1, description="Unique MCP server identifier.")
     transport: Literal["stdio", "http"] = Field(...)
+    enabled: bool = Field(default=True)
 
     # stdio transport
     command: list[str] | None = Field(
@@ -34,6 +35,10 @@ class MCPServerConfig(BaseModel):
         default_factory=dict,
         description="Explicit env variables merged into the subprocess env.",
     )
+    extra_env_secret_refs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variable names mapped to secret-store references.",
+    )
 
     # http transport
     url: str | None = Field(
@@ -43,6 +48,10 @@ class MCPServerConfig(BaseModel):
     headers: dict[str, str] = Field(
         default_factory=dict,
         description="HTTP headers sent with every MCP request.",
+    )
+    header_secret_refs: dict[str, str] = Field(
+        default_factory=dict,
+        description="HTTP header names mapped to secret-store references.",
     )
 
     # Namespacing and filtering

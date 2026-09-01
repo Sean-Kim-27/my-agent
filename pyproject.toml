@@ -21,6 +21,10 @@ dependencies = [
     "discord.py>=2.3.0",
     "python-telegram-bot>=21.0",
     "tenacity>=8.2.0",
+    "filelock>=3.15.0",
+    "keyring>=25.2.0",
+    "platformdirs>=4.2.0",
+    "tomli-w>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +36,8 @@ dev = [
 ]
 
 [project.scripts]
-agent-framework = "agent_framework.main:main"
+myagen = "agent_framework.cli.app:main"
+agent-framework = "agent_framework.cli.app:legacy_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_framework"]

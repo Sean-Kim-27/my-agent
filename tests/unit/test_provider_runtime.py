@@ -35,6 +35,7 @@ class ScriptedProvider(LLMProvider):
         super().__init__(name=name, model=f"{name}-model", capabilities=capabilities, max_retries=0)
         self.outcomes = outcomes
         self.calls = 0
+        self.closed = False
 
     async def _generate_internal(
         self,
@@ -53,6 +54,9 @@ class ScriptedProvider(LLMProvider):
 
     async def health_check(self) -> bool:
         return bool(self.outcomes)
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def response(provider: str, content: str = "ok") -> LLMResponse:
@@ -97,6 +101,25 @@ async def test_runtime_falls_back_without_recalling_failed_primary() -> None:
     assert result.provider == "fallback"
     assert primary.calls == 1
     assert fallback.calls == 1
+
+
+async def test_runtime_uses_smallest_context_window_and_closes_providers() -> None:
+    primary = ScriptedProvider(
+        "primary",
+        [response("primary")],
+        capabilities=ProviderCapabilities(context_window=8_000),
+    )
+    fallback = ScriptedProvider(
+        "fallback",
+        [response("fallback")],
+        capabilities=ProviderCapabilities(context_window=32_000),
+    )
+    runtime = ProviderRuntime(primary, [fallback])
+
+    assert runtime.capabilities.context_window == 8_000
+    await runtime.close()
+    assert primary.closed is True
+    assert fallback.closed is True
 
 
 async def test_runtime_reports_exhausted_fallback_chain() -> None:

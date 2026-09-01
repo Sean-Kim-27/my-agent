@@ -1,6 +1,6 @@
 """Central configuration settings for Agent Framework."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -162,6 +162,10 @@ class Settings(BaseSettings):
     mcp_config_path: str | None = Field(
         default=None,
         description="Path to a JSON file listing MCP servers to register.",
+    )
+    mcp_servers: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Managed MCP server records stored by the myagen CLI.",
     )
 
     # Context engine (Phase 8) configuration

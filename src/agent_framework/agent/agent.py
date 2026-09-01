@@ -12,7 +12,7 @@ from agent_framework.agent.events import AgentCallbackHandler
 from agent_framework.agent.runtime import RunContext, RunState
 from agent_framework.exceptions import AgentError
 from agent_framework.llm.base import LLMProvider
-from agent_framework.logging.logger import get_logger
+from agent_framework.logging.logger import get_logger, redact_sensitive_data
 from agent_framework.memory.base import ConversationMemory
 from agent_framework.memory.context import ContextManager
 from agent_framework.memory.session import SessionManager
@@ -446,25 +446,41 @@ class Agent:
                     )
 
                 for tc in response.tool_calls:
+                    safe_arguments = redact_sensitive_data(tc.arguments)
                     await self._dispatch(
                         active_callbacks,
                         "on_tool_start",
                         step=step,
                         tool_name=tc.name,
-                        arguments=tc.arguments,
+                        arguments=safe_arguments,
                     )
 
                 asst_tool_msg = response.to_message()
                 context_messages.append(asst_tool_msg)
-                await memory.add(asst_tool_msg)
 
                 async def _confirm(call: ToolCall, step_no: int = step) -> bool:
-                    for handler in active_callbacks:
+                    confirmation_handlers = [
+                        handler
+                        for handler in active_callbacks
+                        if type(handler).on_tool_confirmation
+                        is not AgentCallbackHandler.on_tool_confirmation
+                    ]
+                    if not confirmation_handlers:
+                        logger.warning(
+                            "Rejecting confirmation-required tool '%s': no explicit "
+                            "confirmation handler is configured",
+                            call.name,
+                        )
+                        return False
+
+                    safe_arguments = redact_sensitive_data(call.arguments)
+
+                    for handler in confirmation_handlers:
                         try:
                             approved = await handler.on_tool_confirmation(
                                 step=step_no,
                                 tool_name=call.name,
-                                arguments=call.arguments,
+                                arguments=safe_arguments,
                             )
                         except Exception as exc:
                             logger.warning(
@@ -498,6 +514,7 @@ class Agent:
                     {tool_call.id: response.provider for tool_call in response.tool_calls}
                 )
 
+                persisted_tool_messages: list[Message] = []
                 for res in tool_results:
                     await self._dispatch(
                         active_callbacks,
@@ -522,7 +539,12 @@ class Agent:
                         is_error=res.is_error,
                     )
                     context_messages.append(tool_msg)
-                    await memory.add(tool_msg)
+                    persisted_tool_messages.append(tool_msg)
+
+                # Persist the assistant tool-call and all matching results as a
+                # single backend transaction where supported. Cancellation
+                # before this point leaves no malformed partial tool turn.
+                await memory.add_many([asst_tool_msg, *persisted_tool_messages])
 
                 step_latency = (time.perf_counter() - step_start) * 1000.0
                 steps.append(

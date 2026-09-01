@@ -312,12 +312,13 @@ The following gaps are intentional and are the subject of later phases:
     approval gate as built-in tools. `reconnect(name)` deregisters stale
     entries before reconnecting so a reconnect never duplicates tool
     registrations. `shutdown()` closes every transport.
-  - `bootstrap.bootstrap_mcp_servers` reads `MCP_CONFIG_PATH` when
-    `ENABLE_MCP=true`, constructs the correct transport per server, and
-    returns the `MCPManager` so the caller can await `shutdown()` alongside
-    the agent lifecycle.
-- **Phase 7** — SQLite schema is unversioned, has no FTS, no CLI for session
-  browse/search/resume.
+  - `bootstrap.bootstrap_mcp_servers` reads legacy `MCP_CONFIG_PATH` or managed
+    `mcp.servers`, resolves credential-store references, and constructs the
+    correct transport. `ApplicationLifecycle` owns shutdown on success/failure.
+- **Phase 7 / 9.5** — _Completed._ `memory/sqlite_store.py` owns schema v2,
+  migration metadata, WAL/busy timeout, session metadata, FTS5 search,
+  transactional tool-turn writes, and quarantine of incomplete historical
+  turns. `myagen session` exposes persisted list/show/search/resume/clear/delete.
 - **Phase 8** — _Completed._ `memory/context.py` now ships two strategies
   (`TokenTrimmingContextManager`, `SummarizingContextManager`) that share a
   `build_groups` partitioner. Groups are trim-atomic: an assistant
@@ -336,6 +337,11 @@ The following gaps are intentional and are the subject of later phases:
   resulting manager to the Agent. `Agent._fit_context` prefers async
   `afit()` when available so summarization runs off the event loop path
   without stalling other awaits.
+- **Phase 9** — _Completed._ `cli/` provides the `myagen` router, atomic
+  user/project TOML, OS-keyring secrets, settings precedence/source reporting,
+  Provider/model/tool/MCP/bot/session commands, `.env` migration, completion,
+  stable exit codes, and versioned JSON output. `lifecycle.py` owns Provider and
+  MCP resources; `agent-framework` is a one-release deprecated alias.
 
 ## Quality gates
 

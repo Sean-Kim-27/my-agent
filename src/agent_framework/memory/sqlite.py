@@ -8,23 +8,12 @@ which lets a single database file back many concurrent conversations.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from agent_framework.memory.base import ConversationMemory
+from agent_framework.memory.sqlite_store import SQLiteSessionStore
 from agent_framework.models.message import Message
-
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS conversation_messages (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id   TEXT    NOT NULL,
-    payload_json TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_session
-    ON conversation_messages(session_id, id);
-"""
 
 
 class SQLiteConversationMemory(ConversationMemory):
@@ -45,15 +34,10 @@ class SQLiteConversationMemory(ConversationMemory):
         self._max_messages = max_messages
         self._lock = asyncio.Lock()
         self._initialized = False
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        self._store = SQLiteSessionStore(self._db_path)
 
     def _ensure_schema_sync(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(_SCHEMA_SQL)
+        self._store.ensure_schema()
 
     async def _ensure_schema(self) -> None:
         if self._initialized:
@@ -61,94 +45,40 @@ class SQLiteConversationMemory(ConversationMemory):
         await asyncio.to_thread(self._ensure_schema_sync)
         self._initialized = True
 
-    def _insert_sync(self, payload: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO conversation_messages(session_id, payload_json) VALUES (?, ?)",
-                (self._session_id, payload),
-            )
-            if self._max_messages is not None:
-                conn.execute(
-                    """
-                    DELETE FROM conversation_messages
-                    WHERE session_id = ?
-                      AND id NOT IN (
-                          SELECT id FROM conversation_messages
-                          WHERE session_id = ?
-                          ORDER BY id DESC
-                          LIMIT ?
-                      )
-                    """,
-                    (self._session_id, self._session_id, self._max_messages),
-                )
-
-    def _select_sync(self, limit: int | None) -> list[str]:
-        with self._connect() as conn:
-            if limit is None or limit <= 0:
-                rows = conn.execute(
-                    "SELECT payload_json FROM conversation_messages "
-                    "WHERE session_id = ? ORDER BY id ASC",
-                    (self._session_id,),
-                ).fetchall()
-                return [r[0] for r in rows]
-            rows = conn.execute(
-                "SELECT payload_json FROM conversation_messages "
-                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                (self._session_id, limit),
-            ).fetchall()
-            return [r[0] for r in reversed(rows)]
-
-    def _last_sync(self) -> str | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT payload_json FROM conversation_messages "
-                "WHERE session_id = ? ORDER BY id DESC LIMIT 1",
-                (self._session_id,),
-            ).fetchone()
-        return row[0] if row else None
-
-    def _count_sync(self) -> int:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM conversation_messages WHERE session_id = ?",
-                (self._session_id,),
-            ).fetchone()
-        return int(row[0]) if row else 0
-
-    def _clear_sync(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM conversation_messages WHERE session_id = ?",
-                (self._session_id,),
-            )
-
     async def add(self, message: Message) -> None:
+        await self.add_many([message])
+
+    async def add_many(self, messages: list[Message]) -> None:
         await self._ensure_schema()
-        payload = message.model_dump_json()
         async with self._lock:
-            await asyncio.to_thread(self._insert_sync, payload)
+            await asyncio.to_thread(
+                self._store.append_messages,
+                self._session_id,
+                messages,
+                max_messages=self._max_messages,
+            )
 
     async def get_messages(self, limit: int | None = None) -> list[Message]:
         await self._ensure_schema()
         async with self._lock:
-            payloads = await asyncio.to_thread(self._select_sync, limit)
-        return [Message.model_validate_json(p) for p in payloads]
+            return await asyncio.to_thread(self._store.messages, self._session_id, limit)
 
     async def get_last_message(self) -> Message | None:
         await self._ensure_schema()
         async with self._lock:
-            payload = await asyncio.to_thread(self._last_sync)
-        return Message.model_validate_json(payload) if payload else None
+            messages = await asyncio.to_thread(self._store.messages, self._session_id, 1)
+        return messages[-1] if messages else None
 
     async def count(self) -> int:
         await self._ensure_schema()
         async with self._lock:
-            return await asyncio.to_thread(self._count_sync)
+            messages = await asyncio.to_thread(self._store.messages, self._session_id)
+        return len(messages)
 
     async def clear(self) -> None:
         await self._ensure_schema()
         async with self._lock:
-            await asyncio.to_thread(self._clear_sync)
+            await asyncio.to_thread(self._store.clear, self._session_id)
 
 
 def sqlite_memory_factory(
@@ -168,7 +98,3 @@ def sqlite_memory_factory(
 
 
 __all__ = ["SQLiteConversationMemory", "sqlite_memory_factory"]
-
-
-# Silence unused-import warnings for BaseException hints referenced in docstrings.
-_ = Any

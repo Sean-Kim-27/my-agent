@@ -67,6 +67,7 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         self.extra_headers = extra_headers or {}
         self._client = client
+        self._owns_client = client is None
 
     async def _get_client(self) -> AsyncOpenAI:
         """Lazily initialize or return the AsyncOpenAI client with active credentials."""
@@ -84,13 +85,20 @@ class OpenAICompatibleProvider(LLMProvider):
                 api_key = creds.token
             headers.update(creds.headers)
 
-        return AsyncOpenAI(
+        self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=self.base_url,
             timeout=self.http_timeout,
             default_headers=headers,
             max_retries=0,
         )
+        return self._client
+
+    async def close(self) -> None:
+        """Close only an SDK client created by this provider."""
+        if self._client is not None and self._owns_client:
+            await self._client.close()
+            self._client = None
 
     def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert standard Message objects to OpenAI message dicts."""

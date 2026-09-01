@@ -33,11 +33,11 @@ class AgentCallbackHandler:
     ) -> bool:
         """Approval hook invoked before executing a tool with ``requires_confirmation=True``.
 
-        Return ``True`` to allow the tool call, ``False`` to reject it. The default
-        implementation approves every request — adapters (CLI, Discord, Telegram)
-        should override this to prompt the human operator.
+        Return ``True`` to allow the tool call, ``False`` to reject it. The base
+        implementation is intentionally not considered a confirmation handler;
+        adapters must override this method to opt into the approval workflow.
         """
-        return True
+        return False
 
     async def on_tool_start(self, step: int, tool_name: str, arguments: dict[str, Any] | str) -> None:
         """Invoked before a tool function is executed."""

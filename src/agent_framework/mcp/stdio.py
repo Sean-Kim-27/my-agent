@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 from typing import Any
 
 from agent_framework.logging.logger import get_logger
@@ -47,6 +48,7 @@ class StdioSubprocessTransport:
         self._extra_env = dict(extra_env or {})
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 0
         self._lock = asyncio.Lock()
@@ -66,6 +68,7 @@ class StdioSubprocessTransport:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                start_new_session=os.name != "nt",
             )
         except FileNotFoundError as exc:
             raise MCPConnectionError(f"MCP command not found: {self._command[0]}") from exc
@@ -73,6 +76,7 @@ class StdioSubprocessTransport:
             raise MCPConnectionError(f"failed to spawn MCP subprocess: {exc}") from exc
 
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     async def initialize(self, timeout: float) -> None:
         params = {
@@ -121,18 +125,34 @@ class StdioSubprocessTransport:
             except (asyncio.CancelledError, Exception):
                 pass
             self._reader_task = None
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
         proc = self._process
         self._process = None
         if proc is not None:
             if proc.returncode is None:
                 try:
-                    proc.terminate()
+                    if os.name != "nt":
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    else:
+                        proc.terminate()
                 except ProcessLookupError:
                     pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except TimeoutError:
-                    proc.kill()
+                    if os.name != "nt":
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        proc.kill()
                     await proc.wait()
         for fut in self._pending.values():
             if not fut.done():
@@ -208,6 +228,18 @@ class StdioSubprocessTransport:
             for fut in list(self._pending.values()):
                 if not fut.done():
                     fut.set_exception(MCPConnectionError("MCP subprocess disconnected"))
+
+    async def _drain_stderr(self) -> None:
+        """Continuously drain server stderr so a noisy child cannot deadlock."""
+        assert self._process is not None and self._process.stderr is not None
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    return
+                logger.debug("MCP server stderr: %s", line.decode("utf-8", errors="replace").rstrip())
+        except asyncio.CancelledError:
+            raise
 
 
 def _extract_text(payload: dict[str, Any]) -> str:

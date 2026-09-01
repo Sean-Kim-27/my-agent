@@ -85,11 +85,17 @@ async def check_provider_health(settings: Settings) -> dict[str, bool]:
     provider_names = ("openai", "anthropic", "nvidia_nim", "openai_compatible", "codex")
 
     async def check(name: str) -> tuple[str, bool]:
+        provider = None
         try:
             provider = create_llm_provider(settings, provider_name=name, max_retries=0)
             return name, await provider.health_check()
         except Exception:
             return name, False
+        finally:
+            if provider is not None:
+                close = getattr(provider, "close", None)
+                if close is not None:
+                    await close()
 
     return dict(await asyncio.gather(*(check(name) for name in provider_names)))
 
@@ -124,8 +130,11 @@ async def dispatch(args: argparse.Namespace) -> None:
             default_session_id=current_session,
         )
     except Exception as exc:
-        print(f"❌ Failed to initialize provider '{provider_name}': {exc}")
-        print("Tip: Check your .env file or command-line parameters.")
+        print(
+            f"❌ Failed to initialize provider '{provider_name}' "
+            f"({type(exc).__name__})."
+        )
+        print("Tip: Run 'myagen doctor' and verify Provider credentials.")
         return
 
     if args.discord:
@@ -135,7 +144,7 @@ async def dispatch(args: argparse.Namespace) -> None:
         try:
             await start_discord_bot(agent=agent, settings=settings)
         except Exception as exc:
-            print(f"❌ Discord bot startup error: {exc}")
+            print(f"❌ Discord bot startup error ({type(exc).__name__}).")
         return
 
     if args.telegram:
@@ -145,7 +154,7 @@ async def dispatch(args: argparse.Namespace) -> None:
         try:
             await start_telegram_bot(agent=agent, settings=settings)
         except Exception as exc:
-            print(f"❌ Telegram bot startup error: {exc}")
+            print(f"❌ Telegram bot startup error ({type(exc).__name__}).")
         return
 
     from agent_framework.integrations.cli.bot import run_cli_session

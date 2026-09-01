@@ -6,6 +6,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Phase 9 — `myagen` CLI and managed runtime
+
+- Added the `myagen` command router with chat/ask, doctor/version/completion,
+  config/auth, Provider/model/tool, MCP, bot, and persistent session commands.
+  `agent-framework` remains as a deprecated alias for one release.
+- Added versioned user/project TOML, atomic locked writes, source-aware
+  precedence, an explicit Settings-field mapping gate, OS keyring secrets, and
+  read-only `.env` dry-run/migration. Secrets are rejected from config argv and
+  TOML.
+- Changed high-risk confirmation to fail closed without an explicit adapter and
+  connected callback decisions to argument-bound `ApprovalService` records.
+- Added `ApplicationLifecycle`; owned Provider SDK clients and MCP resources now
+  close on normal, failure, and cancellation paths. Fallback context budgeting
+  uses the smallest known window and REPL Provider switches rebuild context.
+- Added managed MCP records with secret references, stdio stderr/process-group
+  cleanup, tools/list timeout, Streamable HTTP session negotiation, and initialized
+  notification support.
+- Added SQLite schema v2, migration metadata, busy timeout, session metadata,
+  FTS5 search, persisted list/show/resume/clear/delete, transactional tool-turn
+  writes, and quarantine of legacy incomplete tool turns.
+- Added recursive credential-field redaction and removed summarization shielding
+  so cancellation drains the active Provider request.
+
 ### Phase 8 — Context engine and compression
 
 - Extended `agent_framework.memory.context` with atomic-group trimming and

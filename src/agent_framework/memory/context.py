@@ -17,7 +17,6 @@ are made at group boundaries so a tool call is never split from its result.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
@@ -303,8 +302,9 @@ class SummarizingContextManager(ContextManager):
             Message.system(self._prompt),
             Message.user(transcript),
         ]
-        response = await asyncio.shield(
-            self.summarizer.generate(request, max_tokens=self.summary_max_tokens)
+        response = await self.summarizer.generate(
+            request,
+            max_tokens=self.summary_max_tokens,
         )
         summary_text = (response.content or "").strip()
         if not summary_text:

@@ -12,6 +12,11 @@ class ConversationMemory(ABC):
     async def add(self, message: Message) -> None:
         """Append a message to the conversation memory."""
 
+    async def add_many(self, messages: list[Message]) -> None:
+        """Append messages atomically when the backend supports transactions."""
+        for message in messages:
+            await self.add(message)
+
     @abstractmethod
     async def get_messages(self, limit: int | None = None) -> list[Message]:
         """Retrieve stored messages in chronological order, optionally limited to the most recent N."""
