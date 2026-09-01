@@ -9,6 +9,27 @@ managed MCP connections, context compression, and persistent SQLite sessions.
 The primary executable is `myagen`. The former `agent-framework` executable is
 kept as a deprecated alias for one release.
 
+## Phase 0–8 status
+
+The master-plan checklist is the requirements text, not a "done" ledger. The
+table below reflects the 2026-08-31 code audit, kept in sync with the
+[Korean README](README.md).
+
+| Phase | Status | Actual scope |
+|---|---|---|
+| 0 | Done | Single-source version, `uv.lock`, Python 3.11/3.12 CI, baseline eval |
+| 1 | Done | Run state, trace, timeout/cancellation, tool pairing |
+| 2 | Done | Provider error normalization, retry/fallback, health command |
+| 3 | Done | Tool contract, validation, policy, output/concurrency limits |
+| 4 | Done (with limits) | Fail-closed HITL + `ApprovalService` wired into the executor; Docker backend is a loud-fail stub |
+| 5 | Done (with limits) | File/terminal/web built-ins; local backend and explicit config flags required |
+| 6 | Done | Managed stdio/HTTP MCP wired into CLI/bot startup/shutdown |
+| 7 | Done | Versioned SQLite, metadata, FTS, persisted session commands, incomplete-turn quarantine |
+| 8 | Done (approximate) | Trimming/summarizing wired; smallest-window fallback budgeting; token count is a heuristic |
+
+See [`docs/remaining_risks.md`](docs/remaining_risks.md) for the risk register
+and follow-up priorities.
+
 ## Install and configure
 
 ```bash
