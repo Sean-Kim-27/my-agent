@@ -54,6 +54,11 @@ pytest passed 304 tests (294 unit + 10 eval); `uv lock --check`, wheel build,
 Python 3.11 clean-venv install, `myagen --help/version`, and the deprecated
 alias smoke test passed.
 
+> **Reproducing the gates.** The dev toolchain (ruff, mypy, pytest) is
+> installed by the `dev` extra. Run `uv sync --locked --extra dev` first;
+> without it the `.venv` binaries referenced below will not exist. Follow-up
+> verification is captured in [phase9_verification_report.md](phase9_verification_report.md).
+
 ### Go/No-Go assessment
 
 | Priority | Area | Assessment | Release implication |
@@ -120,6 +125,26 @@ alias smoke test passed.
 - **No real Docker isolation:** `DockerExecutionBackend` remains an intentional
   loud-fail scaffold. Selecting it does not provide a usable sandbox.
 
+### Deferred to a future isolation phase (Phase 10 candidate)
+
+The following items are known design constraints, not defects in shipped
+Phase 0–9 code. They are tracked here so a dedicated isolation-backend phase
+can pick them up:
+
+- Real Docker (or equivalent) execution backend replacing the loud-fail scaffold.
+- Connection-pinned web fetch to close the DNS-validated → `httpx`-redialed
+  TOCTOU window that today's `WebFetchTool` cannot fully eliminate.
+- Descriptor-relative file operations to close the safe-root symlink race that
+  the current path-check-then-open flow leaves open.
+- Forcible cancellation of synchronous worker-thread tools (requires an out-of-
+  process boundary; asyncio cancellation alone is insufficient).
+- Full MCP protocol-revision negotiation (parsing the server's advertised
+  `protocolVersion` and adjusting per-revision headers/session rules).
+  The current transports advertise `2024-11-05` by default; operators can point
+  at another revision via the `MCP_PROTOCOL_VERSION` environment variable, but
+  automatic negotiation and revision-specific transport behavior still need a
+  dedicated interoperability effort.
+
 ---
 
 ## Phase 0 — Baseline, versions, release alignment
@@ -127,7 +152,8 @@ alias smoke test passed.
 - ~~`README.md`의 Phase 0-5 "구현 완료" 체크리스트는 마스터 시행안의
   Phase 번호 체계와 다른 옛 로드맵을 지칭함.~~ **2026-08-31:** Korean
   README rewritten against the actual Phase 0–8 implementation and acceptance
-  gaps. `README_EN.md` still needs the same synchronization.
+  gaps. **2026-09-01:** `README_EN.md` now carries the same Phase 0–8 status
+  table, closing this item.
 - `SecretMaskingFormatter` 등 로거 재설계는 Phase 4에서 다시 다룰 여지가
   있음. 현재는 정규식 기반 라이브 masking만 검증됨.
 - `Agent.run_with_trace`의 `on_agent_error` 중복 dispatch, task 취소 부재

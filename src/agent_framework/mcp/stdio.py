@@ -24,11 +24,10 @@ from agent_framework.mcp.errors import (
     MCPProtocolError,
     MCPToolError,
 )
+from agent_framework.mcp.protocol import protocol_version
 from agent_framework.mcp.transport import MCPToolInfo
 
 logger = get_logger("agent_framework.mcp.stdio")
-
-_PROTOCOL_VERSION = "2024-11-05"
 
 
 class StdioSubprocessTransport:
@@ -80,7 +79,7 @@ class StdioSubprocessTransport:
 
     async def initialize(self, timeout: float) -> None:
         params = {
-            "protocolVersion": _PROTOCOL_VERSION,
+            "protocolVersion": protocol_version(),
             "capabilities": {},
             "clientInfo": {"name": "agent-framework", "version": "0.3.0"},
         }
